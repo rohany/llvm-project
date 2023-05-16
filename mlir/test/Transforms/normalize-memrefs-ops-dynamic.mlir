@@ -105,7 +105,7 @@ func.func @test_norm_dynamic1234(%arg0 : memref<?x?x?x?xf32, #map_tiled1>) -> ()
 // CHECK-DAG: #[[$MAP6:.+]] = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2 - d1, d3 - d2)>
 
 // CHECK-LABEL:  func @test_norm_dynamic_not_tiled0
-// CHECK-SAME:   ([[ARG_0_:%.+]]: memref<1x?x?x14xf32, #[[$MAP6]]>) {
+// CHECK-SAME:   ([[ARG_0_:%.+]]: memref<1x?x?x?xf32>) {
 func.func @test_norm_dynamic_not_tiled0(%arg0 : memref<1x?x?x14xf32, #map_not_tiled0>) -> () {
     %c1 = arith.constant 1 : index
     %c2 = arith.constant 2 : index
@@ -118,10 +118,10 @@ func.func @test_norm_dynamic_not_tiled0(%arg0 : memref<1x?x?x14xf32, #map_not_ti
     // CHECK-DAG:       [[CST_1_:%.+]] = arith.constant 1 : index
     // CHECK-DAG:       [[CST_2_:%.+]] = arith.constant 2 : index
     // CHECK-NOT: separator of consecutive DAGs
-    // CHECK-DAG:       [[DIM_0_:%.+]] = memref.dim [[ARG_0_]], [[CST_1_]] : memref<1x?x?x14xf32, #[[$MAP6]]>
-    // CHECK-DAG:       [[DIM_1_:%.+]] = memref.dim [[ARG_0_]], [[CST_2_]] : memref<1x?x?x14xf32, #[[$MAP6]]>
+    // CHECK-DAG:       [[DIM_0_:%.+]] = memref.dim [[ARG_0_]], [[CST_1_]] : memref<1x?x?x?xf32>
+    // CHECK-DAG:       [[DIM_1_:%.+]] = memref.dim [[ARG_0_]], [[CST_2_]] : memref<1x?x?x?xf32>
     // CHECK:           [[RES_:%.+]] = memref.alloc([[DIM_0_]], [[DIM_1_]]) : memref<1x?x?x14xf32, #[[$MAP6]]>
-    // CHECK:           "test.op_norm"([[ARG_0_]], [[RES_]]) : (memref<1x?x?x14xf32, #[[$MAP6]]>, memref<1x?x?x14xf32, #[[$MAP6]]>) -> ()
+    // CHECK:           "test.op_norm"([[ARG_0_]], [[RES_]]) : (memref<1x?x?x?xf32>, memref<1x?x?x14xf32, #[[$MAP6]]>) -> ()
     // CHECK:           memref.dealloc [[RES_]] : memref<1x?x?x14xf32, #[[$MAP6]]>
     // CHECK:           return
 }
@@ -133,10 +133,10 @@ func.func @test_norm_dynamic_not_tiled0(%arg0 : memref<1x?x?x14xf32, #map_not_ti
 
 #map_not_tiled1 = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2 - d1, d3 - d2, d2 mod 32, d3 mod 64)>
 
-// CHECK-DAG: #[[$MAP6:.+]] = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2 - d1, d3 - d2, d2 mod 32, d3 mod 64)>
+// CHECK-DAG: #[[$MAP7:.+]] = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2 - d1, d3 - d2, d2 mod 32, d3 mod 64)>
 
 // CHECK-LABEL:  func @test_norm_dynamic_not_tiled1
-// CHECK-SAME:   ([[ARG_0_:%.+]]: memref<1x?x?x14xf32, #[[$MAP6]]>) {
+// CHECK-SAME:   ([[ARG_0_:%.+]]: memref<1x?x?x?x?x64xf32>) {
 func.func @test_norm_dynamic_not_tiled1(%arg0 : memref<1x?x?x14xf32, #map_not_tiled1>) -> () {
     %c1 = arith.constant 1 : index
     %c2 = arith.constant 2 : index
@@ -149,10 +149,10 @@ func.func @test_norm_dynamic_not_tiled1(%arg0 : memref<1x?x?x14xf32, #map_not_ti
     // CHECK-DAG:       [[CST_1_:%.+]] = arith.constant 1 : index
     // CHECK-DAG:       [[CST_2_:%.+]] = arith.constant 2 : index
     // CHECK-NOT: separator of consecutive DAGs
-    // CHECK-DAG:       [[DIM_0_:%.+]] = memref.dim [[ARG_0_]], [[CST_1_]] : memref<1x?x?x14xf32, #[[$MAP6]]>
-    // CHECK-DAG:       [[DIM_1_:%.+]] = memref.dim [[ARG_0_]], [[CST_2_]] : memref<1x?x?x14xf32, #[[$MAP6]]>
+    // CHECK-DAG:       [[DIM_0_:%.+]] = memref.dim [[ARG_0_]], [[CST_1_]] : memref<1x?x?x?x?x64xf32>
+    // CHECK-DAG:       [[DIM_1_:%.+]] = memref.dim [[ARG_0_]], [[CST_2_]] : memref<1x?x?x?x?x64xf32>
     // CHECK:           [[RES_:%.+]] = memref.alloc([[DIM_0_]], [[DIM_1_]]) : memref<1x?x?x14xf32, #[[$MAP6]]>
-    // CHECK:           "test.op_norm"([[ARG_0_]], [[RES_]]) : (memref<1x?x?x14xf32, #[[$MAP6]]>, memref<1x?x?x14xf32, #[[$MAP6]]>) -> ()
+    // CHECK:           "test.op_norm"([[ARG_0_]], [[RES_]]) : (memref<1x?x?x?x?x64xf32>, memref<1x?x?x14xf32, #[[$MAP6]]>) -> ()
     // CHECK:           memref.dealloc [[RES_]] : memref<1x?x?x14xf32, #[[$MAP6]]>
     // CHECK:           return
 }
@@ -164,10 +164,10 @@ func.func @test_norm_dynamic_not_tiled1(%arg0 : memref<1x?x?x14xf32, #map_not_ti
 
 #map_not_tiled2 = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2 - d1, d3 floordiv 64, d2 mod 32, d3 mod 32)>
 
-// CHECK-DAG: #[[$MAP7:.+]] = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2 - d1, d3 floordiv 64, d2 mod 32, d3 mod 32)>
+// CHECK-DAG: #[[$MAP8:.+]] = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2 - d1, d3 floordiv 64, d2 mod 32, d3 mod 32)>
 
 // CHECK-LABEL:  func @test_norm_dynamic_not_tiled2
-// CHECK-SAME:   ([[ARG_0_:%.+]]: memref<1x?x?x14xf32, #[[$MAP7]]>) {
+// CHECK-SAME:   ([[ARG_0_:%.+]]: memref<1x?x?x1x?x32xf32>) {
 func.func @test_norm_dynamic_not_tiled2(%arg0 : memref<1x?x?x14xf32, #map_not_tiled2>) -> () {
     %c1 = arith.constant 1 : index
     %c2 = arith.constant 2 : index
@@ -180,10 +180,10 @@ func.func @test_norm_dynamic_not_tiled2(%arg0 : memref<1x?x?x14xf32, #map_not_ti
     // CHECK-DAG:       [[CST_1_:%.+]] = arith.constant 1 : index
     // CHECK-DAG:       [[CST_2_:%.+]] = arith.constant 2 : index
     // CHECK-NOT: separator of consecutive DAGs
-    // CHECK-DAG:       [[DIM_0_:%.+]] = memref.dim [[ARG_0_]], [[CST_1_]] : memref<1x?x?x14xf32, #[[$MAP7]]>
-    // CHECK-DAG:       [[DIM_1_:%.+]] = memref.dim [[ARG_0_]], [[CST_2_]] : memref<1x?x?x14xf32, #[[$MAP7]]>
+    // CHECK-DAG:       [[DIM_0_:%.+]] = memref.dim [[ARG_0_]], [[CST_1_]] : memref<1x?x?x1x?x32xf32>
+    // CHECK-DAG:       [[DIM_1_:%.+]] = memref.dim [[ARG_0_]], [[CST_2_]] : memref<1x?x?x1x?x32xf32>
     // CHECK:           [[RES_:%.+]] = memref.alloc([[DIM_0_]], [[DIM_1_]]) : memref<1x?x?x14xf32, #[[$MAP7]]>
-    // CHECK:           "test.op_norm"([[ARG_0_]], [[RES_]]) : (memref<1x?x?x14xf32, #[[$MAP7]]>, memref<1x?x?x14xf32, #[[$MAP7]]>) -> ()
+    // CHECK:           "test.op_norm"([[ARG_0_]], [[RES_]]) : (memref<1x?x?x1x?x32xf32>, memref<1x?x?x14xf32, #[[$MAP7]]>) -> ()
     // CHECK:           memref.dealloc [[RES_]] : memref<1x?x?x14xf32, #[[$MAP7]]>
     // CHECK:           return
 }
@@ -195,10 +195,10 @@ func.func @test_norm_dynamic_not_tiled2(%arg0 : memref<1x?x?x14xf32, #map_not_ti
 
 #map_not_tiled3 = affine_map<(d0, d1, d2, d3) -> (d0, d1 floordiv 32, d2, d3, d1 mod 32, d1 mod 32)>
 
-// CHECK-DAG: #[[$MAP8:.+]] = affine_map<(d0, d1, d2, d3) -> (d0, d1 floordiv 32, d2, d3, d1 mod 32, d1 mod 32)>
+// CHECK-DAG: #[[$MAP9:.+]] = affine_map<(d0, d1, d2, d3) -> (d0, d1 floordiv 32, d2, d3, d1 mod 32, d1 mod 32)>
 
 // CHECK-LABEL:  func @test_norm_dynamic_not_tiled3
-// CHECK-SAME:   ([[ARG_0_:%.+]]: memref<1x?x?x14xf32, #[[$MAP8]]>) {
+// CHECK-SAME:   ([[ARG_0_:%.+]]: memref<1x?x?x14x?x?xf32>) {
 func.func @test_norm_dynamic_not_tiled3(%arg0 : memref<1x?x?x14xf32, #map_not_tiled3>) -> () {
     %c1 = arith.constant 1 : index
     %c2 = arith.constant 2 : index
@@ -211,10 +211,10 @@ func.func @test_norm_dynamic_not_tiled3(%arg0 : memref<1x?x?x14xf32, #map_not_ti
     // CHECK-DAG:       [[CST_1_:%.+]] = arith.constant 1 : index
     // CHECK-DAG:       [[CST_2_:%.+]] = arith.constant 2 : index
     // CHECK-NOT: separator of consecutive DAGs
-    // CHECK-DAG:       [[DIM_0_:%.+]] = memref.dim [[ARG_0_]], [[CST_1_]] : memref<1x?x?x14xf32, #[[$MAP8]]>
-    // CHECK-DAG:       [[DIM_1_:%.+]] = memref.dim [[ARG_0_]], [[CST_2_]] : memref<1x?x?x14xf32, #[[$MAP8]]>
+    // CHECK-DAG:       [[DIM_0_:%.+]] = memref.dim [[ARG_0_]], [[CST_1_]] : memref<1x?x?x14x?x?xf32>
+    // CHECK-DAG:       [[DIM_1_:%.+]] = memref.dim [[ARG_0_]], [[CST_2_]] : memref<1x?x?x14x?x?xf32>
     // CHECK:           [[RES_:%.+]] = memref.alloc([[DIM_0_]], [[DIM_1_]]) : memref<1x?x?x14xf32, #[[$MAP8]]>
-    // CHECK:           "test.op_norm"([[ARG_0_]], [[RES_]]) : (memref<1x?x?x14xf32, #[[$MAP8]]>, memref<1x?x?x14xf32, #[[$MAP8]]>) -> ()
+    // CHECK:           "test.op_norm"([[ARG_0_]], [[RES_]]) : (memref<1x?x?x14x?x?xf32>, memref<1x?x?x14xf32, #[[$MAP8]]>) -> ()
     // CHECK:           memref.dealloc [[RES_]] : memref<1x?x?x14xf32, #[[$MAP8]]>
     // CHECK:           return
 }
@@ -226,10 +226,10 @@ func.func @test_norm_dynamic_not_tiled3(%arg0 : memref<1x?x?x14xf32, #map_not_ti
 
 #map_not_tiled4 = affine_map<(d0, d1, d2, d3) -> (d0 floordiv 32, d1 floordiv 32, d0, d3, d0 mod 32, d1 mod 32)>
 
-// CHECK-DAG: #[[$MAP9:.+]] = affine_map<(d0, d1, d2, d3) -> (d0 floordiv 32, d1 floordiv 32, d0, d3, d0 mod 32, d1 mod 32)>
+// CHECK-DAG: #[[$MAP10:.+]] = affine_map<(d0, d1, d2, d3) -> (d0 floordiv 32, d1 floordiv 32, d0, d3, d0 mod 32, d1 mod 32)>
 
 // CHECK-LABEL:  func @test_norm_dynamic_not_tiled4
-// CHECK-SAME:   ([[ARG_0_:%.+]]: memref<1x?x?x14xf32, #[[$MAP9]]>) {
+// CHECK-SAME:   ([[ARG_0_:%.+]]: memref<1x?x1x14x32x?xf32>) {
 func.func @test_norm_dynamic_not_tiled4(%arg0 : memref<1x?x?x14xf32, #map_not_tiled4>) -> () {
     %c1 = arith.constant 1 : index
     %c2 = arith.constant 2 : index
@@ -242,10 +242,41 @@ func.func @test_norm_dynamic_not_tiled4(%arg0 : memref<1x?x?x14xf32, #map_not_ti
     // CHECK-DAG:       [[CST_1_:%.+]] = arith.constant 1 : index
     // CHECK-DAG:       [[CST_2_:%.+]] = arith.constant 2 : index
     // CHECK-NOT: separator of consecutive DAGs
-    // CHECK-DAG:       [[DIM_0_:%.+]] = memref.dim [[ARG_0_]], [[CST_1_]] : memref<1x?x?x14xf32, #[[$MAP9]]>
-    // CHECK-DAG:       [[DIM_1_:%.+]] = memref.dim [[ARG_0_]], [[CST_2_]] : memref<1x?x?x14xf32, #[[$MAP9]]>
+    // CHECK-DAG:       [[DIM_0_:%.+]] = memref.dim [[ARG_0_]], [[CST_1_]] : memref<1x?x1x14x32x?xf32>
+    // CHECK-DAG:       [[DIM_1_:%.+]] = memref.dim [[ARG_0_]], [[CST_2_]] : memref<1x?x1x14x32x?xf32>
     // CHECK:           [[RES_:%.+]] = memref.alloc([[DIM_0_]], [[DIM_1_]]) : memref<1x?x?x14xf32, #[[$MAP9]]>
-    // CHECK:           "test.op_norm"([[ARG_0_]], [[RES_]]) : (memref<1x?x?x14xf32, #[[$MAP9]]>, memref<1x?x?x14xf32, #[[$MAP9]]>) -> ()
+    // CHECK:           "test.op_norm"([[ARG_0_]], [[RES_]]) : (memref<1x?x1x14x32x?xf32>, memref<1x?x?x14xf32, #[[$MAP9]]>) -> ()
     // CHECK:           memref.dealloc [[RES_]] : memref<1x?x?x14xf32, #[[$MAP9]]>
     // CHECK:           return
+}
+
+// -----
+
+// Test that memrefs with affine maps that aren't tiled can be still be normalized when passed as function arguments.
+
+#map_dyn_arg1 = affine_map<(d0, d1, d2) -> (d1 + 3, d2 + 5)>
+#map_dyn_arg2 = affine_map<(d0, d1, d2) -> (0)>
+#map_dyn_arg3 = affine_map<(d0, d1, d2) -> (d0 * 2, d1 + d2)>
+
+// CHECK-LABEL:  func @test_func_arg_dynamic_memrefs_normalized
+// CHECK-SAME:   ([[ARG_0_:%.+]]: memref<?x?xf64>, [[ARG_1_:%.+]]: memref<1xf64>, [[ARG_2_:%.+]]: memref<?x?xf64>, [[D_0_:%.+]]: index, [[D_1_:%.+]]: index, [[D_2_:%.+]]: index) {
+func.func @test_func_arg_dynamic_memrefs_normalized(%arg0 : memref<?x?x?xf64, #map_dyn_arg1>, %arg1: memref<?x?x?xf64, #map_dyn_arg2>, %arg2 : memref<?x?x?xf64, #map_dyn_arg3>, %d0 : index, %d1 : index, %d2 : index) -> () {
+  %0 = arith.constant 0.0 : f64
+  affine.for %i = 0 to %d0 {
+    affine.for %j = 0 to %d1 {
+      affine.for %k = 0 to %d2 {
+        affine.store %0, %arg0[%i, %j, %k] : memref<?x?x?xf64, #map_dyn_arg1>
+        affine.store %0, %arg1[%i, %j, %k] : memref<?x?x?xf64, #map_dyn_arg2>
+        affine.store %0, %arg2[%i, %j, %k] : memref<?x?x?xf64, #map_dyn_arg3>
+      }
+    }
+  }
+  return
+  // CHECK: [[CST_1_:%.+]] = arith.constant 0.000000e+00 : f64
+  // CHECK: affine.for [[I_:%.+]] = 0 to [[D_0_]] {
+  // CHECK: affine.for [[J_:%.+]] = 0 to [[D_1_]] {
+  // CHECK: affine.for [[K_:%.+]] = 0 to [[D_2_]] {
+  // CHECK: affine.store [[CST_1_]], [[ARG_0_]][[[J_]] + 3, [[K_]] + 5] : memref<?x?xf64>
+  // CHECK: affine.store [[CST_1_]], [[ARG_1_]][0] : memref<1xf64>
+  // CHECK: affine.store [[CST_1_]], [[ARG_2_]][[[I_]] * 2, [[J_]] + [[K_]]] : memref<?x?xf64>
 }

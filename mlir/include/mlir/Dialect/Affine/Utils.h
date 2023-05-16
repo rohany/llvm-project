@@ -247,9 +247,9 @@ LogicalResult normalizeMemRef(memref::AllocOp *op);
 
 /// Normalizes `memrefType` so that the affine layout map of the memref is
 /// transformed to an identity map with a new shape being computed for the
-/// normalized memref type and returns it. The old memref type is simplify
+/// normalized memref type and returns it. The old memref type is simply
 /// returned if the normalization failed.
-MemRefType normalizeMemRefType(MemRefType memrefType,
+MemRefType normalizeMemRefType(OpBuilder& builder, MemRefType memrefType,
                                unsigned numSymbolicOperands);
 
 /// Creates and inserts into 'builder' a new AffineApplyOp, with the number of

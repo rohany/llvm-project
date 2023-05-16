@@ -1721,7 +1721,7 @@ LogicalResult mlir::affine::normalizeMemRef(memref::AllocOp *allocOp) {
   // Fetch a new memref type after normalizing the old memref to have an
   // identity map layout.
   MemRefType newMemRefType =
-      normalizeMemRefType(memrefType, allocOp->getSymbolOperands().size());
+      normalizeMemRefType(b, memrefType, allocOp->getSymbolOperands().size());
   if (newMemRefType == memrefType)
     // Either memrefType already had an identity map or the map couldn't be
     // transformed to an identity map.
@@ -1733,7 +1733,9 @@ LogicalResult mlir::affine::normalizeMemRef(memref::AllocOp *allocOp) {
   AffineMap layoutMap = memrefType.getLayout().getAffineMap();
   memref::AllocOp newAlloc;
   // Check if `layoutMap` is a tiled layout. Only single layout map is
-  // supported for normalizing dynamic memrefs.
+  // supported for normalizing dynamic memrefs. While normalizeMemRefType
+  // can handle normalization of memrefs with dynamic shapes, the computation
+  // of new allocation sizes is not yet supported.
   SmallVector<std::tuple<AffineExpr, unsigned, unsigned>> tileSizePos;
   (void)getTileSizePos(layoutMap, tileSizePos);
   if (newMemRefType.getNumDynamicDims() > 0 && !tileSizePos.empty()) {
@@ -1745,6 +1747,10 @@ LogicalResult mlir::affine::normalizeMemRef(memref::AllocOp *allocOp) {
     newAlloc =
         b.create<memref::AllocOp>(allocOp->getLoc(), newMemRefType,
                                   newDynamicSizes, allocOp->getAlignmentAttr());
+  } else if (newMemRefType.getNumDynamicDims() > 0 && tileSizePos.empty()) {
+    // As discussed above, handling the new size calculation for dynamically
+    // shaped memrefs during normalzation is currently unsupported.
+    return failure();  
   } else {
     newAlloc = b.create<memref::AllocOp>(allocOp->getLoc(), newMemRefType,
                                          allocOp->getAlignmentAttr());
@@ -1772,7 +1778,7 @@ LogicalResult mlir::affine::normalizeMemRef(memref::AllocOp *allocOp) {
   return success();
 }
 
-MemRefType mlir::affine::normalizeMemRefType(MemRefType memrefType,
+MemRefType mlir::affine::normalizeMemRefType(OpBuilder& builder, MemRefType memrefType,
                                              unsigned numSymbolicOperands) {
   unsigned rank = memrefType.getRank();
   if (rank == 0)
@@ -1788,14 +1794,6 @@ MemRefType mlir::affine::normalizeMemRefType(MemRefType memrefType,
   // We don't do any checks for one-to-one'ness; we assume that it is
   // one-to-one.
 
-  // Normalize only static memrefs and dynamic memrefs with a tiled-layout map
-  // for now.
-  // TODO: Normalize the other types of dynamic memrefs.
-  SmallVector<std::tuple<AffineExpr, unsigned, unsigned>> tileSizePos;
-  (void)getTileSizePos(layoutMap, tileSizePos);
-  if (memrefType.getNumDynamicDims() > 0 && tileSizePos.empty())
-    return memrefType;
-
   // We have a single map that is not an identity map. Create a new memref
   // with the right shape and an identity layout map.
   ArrayRef<int64_t> shape = memrefType.getShape();
@@ -1803,12 +1801,22 @@ MemRefType mlir::affine::normalizeMemRefType(MemRefType memrefType,
   FlatAffineValueConstraints fac(rank, numSymbolicOperands);
   SmallVector<unsigned, 4> memrefTypeDynDims;
   for (unsigned d = 0; d < rank; ++d) {
-    // Use constraint system only in static dimensions.
+    // The lower bound on a memref shape is always 0.
+    fac.addBound(IntegerPolyhedron::LB, d, 0);
     if (shape[d] > 0) {
-      fac.addBound(BoundType::LB, d, 0);
+      // If the size of this dimension is statically known,
+      // add the constant upper bound.
       fac.addBound(BoundType::UB, d, shape[d] - 1);
     } else {
+      // Otherwise, construct an affine map to represent the dynamic
+      // bound of this dimension. The affine map constructed represents
+      // just accessing the d'th dimension of the input shape.
       memrefTypeDynDims.emplace_back(d);
+      AffineExpr ub = builder.getAffineDimExpr(d);
+      auto map = AffineMap::get(fac.getNumDimVars(), fac.getNumSymbolVars(), ub);
+      if (failed(fac.addBound(IntegerPolyhedron::UB, d, map))) {
+        return memrefType;
+      }
     }
   }
   // We compose this map with the original index (logical) space to derive

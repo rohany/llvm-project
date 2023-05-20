@@ -888,3 +888,48 @@ func.func @cross_block() {
   %69 = affine.load %alloc_99[%c10] : memref<13xi1>
   return
 }
+
+// Ensure that memrefs with just store operations get eliminated.
+// CHECK-LABEL : func @dead_stores() {
+func.func @dead_stores() {
+  %c1 = arith.constant 1.0 : f64
+  %alloc = memref.alloc() : memref<100xf64>
+  affine.for %i = 0 to 100 {
+    affine.store %c1, %alloc[%i] : memref<100xf64>
+  }
+  return
+  // CHECK: %{{.*}} = arith.constant
+  // CHECK-NEXT: affine.for %{{.*}} = 0 to 100 {
+  // CHECK-NEXT: }
+  // CHECK-NEXT: return
+}
+
+// Check that we can utilize aliasing information available from
+// local allocations against function parameters.
+
+// CHECK-LABEL : func @aliasing_local_params
+// CHECK-SAME ([[ARG_0_:%.+]]: memref<100xf64>) -> memref<100xf64> {
+func.func @aliasing_local_params(%arg0: memref<100xf64>) -> memref<100xf64> {
+  %c1 = arith.constant 1.0 : f64
+  %alloc = memref.alloc() : memref<100xf64>
+  affine.for %i = 0 to 100 {
+    %0 = affine.load %alloc[%i] : memref<100xf64>
+    affine.store %c1, %arg0[%i] : memref<100xf64>
+    %1 = affine.load %alloc[%i] : memref<100xf64>
+    %2 = arith.addf %1, %c1 : f64
+    affine.store %2, %alloc[%i] : memref<100xf64>
+  }
+  // TODO (rohany): I want to check in the affine.store below that we're storing to
+  //  the argument 0, but for some reason the filecheck test keeps telling me that
+  //  ARG_0_ is undefined...
+  return %alloc : memref<100xf64>
+  // CHECK: [[C1:%.+]] = arith.constant
+  // CHECK-NEXT: [[AL:%.+]] = memref.alloc
+  // CHECK-NEXT: affine.for [[I:%.+]] = 0 to 100 {
+  // CHECK-NEXT:   [[T0:%.+]] = affine.load [[AL]][[[I]]] : memref<100xf64>
+  // CHECK-NEXT:   affine.store
+  // CHECK-NEXT:   [[T2:%.+]] = arith.addf [[T0]], [[C1]] : f64
+  // CHECK-NEXT:   affine.store [[T2]], [[AL]][[[I]]] : memref<100xf64>
+  // CHECK-NEXT: }
+  // CHECK-NEXT: return [[AL]] : memref<100xf64>
+}

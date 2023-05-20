@@ -1201,8 +1201,9 @@ static Operation *vectorizeAffineLoad(AffineLoadOp loadOp,
   LLVM_DEBUG(dbgs() << "\n[early-vect]+++++ permutationMap: ");
   LLVM_DEBUG(permutationMap.print(dbgs()));
 
+  SmallVector<bool, 4> inBounds(memRefType.getRank(), true);
   auto transfer = state.builder.create<vector::TransferReadOp>(
-      loadOp.getLoc(), vectorType, loadOp.getMemRef(), indices, permutationMap);
+      loadOp.getLoc(), vectorType, loadOp.getMemRef(), indices, permutationMap, inBounds);
 
   // Register replacement for future uses in the scope.
   state.registerOpVectorReplacement(loadOp, transfer);
@@ -1244,9 +1245,10 @@ static Operation *vectorizeAffineStore(AffineStoreOp storeOp,
   LLVM_DEBUG(dbgs() << "\n[early-vect]+++++ permutationMap: ");
   LLVM_DEBUG(permutationMap.print(dbgs()));
 
+  SmallVector<bool, 4> inBounds(memRefType.getRank(), true);
   auto transfer = state.builder.create<vector::TransferWriteOp>(
       storeOp.getLoc(), vectorValue, storeOp.getMemRef(), indices,
-      permutationMap);
+      permutationMap, inBounds);
   LLVM_DEBUG(dbgs() << "\n[early-vect]+++++ vectorized store: " << transfer);
 
   // Register replacement for future uses in the scope.

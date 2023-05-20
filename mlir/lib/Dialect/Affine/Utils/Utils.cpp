@@ -702,6 +702,23 @@ static bool mayHaveEffect(Operation *srcMemOp, Operation *destMemOp,
     // No side effect was seen.
     return false;
   }
+
+  // We don't have complete aliasing information yet (the TODO below),
+  // but we have some information we can work with around aliasing based
+  // on where the memrefs are coming from. If the two memrefs we are 
+  // considering aren't the same, and at least one of them was allocated
+  // within this scope, then the two memrefs can't alias, since allocation
+  // produces a fresh memory range.
+  if (srcAccess.memref != destAccess.memref) {
+    auto isLocallyAllocated = [](Value memref) {
+      auto *defOp = memref.getDefiningOp();
+      return defOp && hasSingleEffect<MemoryEffects::Allocate>(defOp, memref);
+    };
+    if (isLocallyAllocated(srcAccess.memref) || isLocallyAllocated(destAccess.memref)) {
+      return false;
+    }
+  }
+
   // TODO: Check here if the memrefs alias: there is no side effect if
   // `srcAccess.memref` and `destAccess.memref` don't alias.
   return true;
@@ -1091,6 +1108,14 @@ void mlir::affine::affineScalarReplace(func::FuncOp f, DominanceInfo &domInfo,
   // Erase all store op's which don't impact the program
   for (auto *op : opsToErase)
     op->erase();
+
+  // The above operation only adds stores that are at least loaded
+  // from once to memrefsToErase. Memrefs that only have store operations
+  // performed on them wouldn't be added to memrefsToErase to be considered
+  // for deletion below, so we add them here.
+  f.walk([&](AffineWriteOpInterface storeOp) {
+    memrefsToErase.insert(storeOp.getMemRef());
+  });
 
   // Check if the store fwd'ed memrefs are now left with only stores and
   // deallocs and can thus be completely deleted. Note: the canonicalize pass

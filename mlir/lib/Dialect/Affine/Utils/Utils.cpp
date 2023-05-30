@@ -1827,7 +1827,7 @@ MemRefType mlir::affine::normalizeMemRefType(OpBuilder& builder, MemRefType memr
   SmallVector<unsigned, 4> memrefTypeDynDims;
   for (unsigned d = 0; d < rank; ++d) {
     // The lower bound on a memref shape is always 0.
-    fac.addBound(IntegerPolyhedron::LB, d, 0);
+    fac.addBound(BoundType::LB, d, 0);
     if (shape[d] > 0) {
       // If the size of this dimension is statically known,
       // add the constant upper bound.
@@ -1839,7 +1839,7 @@ MemRefType mlir::affine::normalizeMemRefType(OpBuilder& builder, MemRefType memr
       memrefTypeDynDims.emplace_back(d);
       AffineExpr ub = builder.getAffineDimExpr(d);
       auto map = AffineMap::get(fac.getNumDimVars(), fac.getNumSymbolVars(), ub);
-      if (failed(fac.addBound(IntegerPolyhedron::UB, d, map))) {
+      if (failed(fac.addBound(BoundType::UB, d, map))) {
         return memrefType;
       }
     }

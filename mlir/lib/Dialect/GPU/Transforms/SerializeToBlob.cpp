@@ -48,9 +48,9 @@ gpu::SerializeToBlobPass::SerializeToBlobPass(const SerializeToBlobPass &other)
 // https://cs.opensource.google/tensorflow/tensorflow/+/master:tensorflow/compiler/xla/service/gpu/llvm_gpu_backend/gpu_backend_lib.cc;drc=262777e9f9304c7df6b694934af819c820954ef5;l=334.
 static LogicalResult linkBitcode(StringRef filename, llvm::Module &llvmModule) {
   llvm::SMDiagnostic diagnosticErr;
-  std::unique_ptr<llvm::Module> bitcodeModule(
-      llvm::parseIRFile(llvm::StringRef(filename.data(), filename.size()),
-                        diagnosticErr, llvmModule.getContext()));
+  std::unique_ptr<llvm::Module> bitcodeModule =
+    llvm::getLazyIRFileModule(filename, diagnosticErr, llvmModule.getContext(),
+                              /*ShouldLazyLoadMetadata=*/true);
   if (!bitcodeModule) {
     llvm::errs() << "Error loading IR module: " << filename << '\n';
     return failure();

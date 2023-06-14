@@ -138,3 +138,40 @@ func.func @tile_nested_in_non_ploop() {
 // CHECK:           }
 // CHECK:         }
 // CHECK:       }
+
+// -----
+
+func.func @tile_reductions() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 10 : index
+  %c3 = arith.constant 0 : i64
+  %0, %1 = scf.parallel (%i) = (%c0) to (%c2) step (%c1) init (%c3, %c3) -> (i64, i64) {
+    scf.reduce (%c3) : i64 {
+    ^bb0(%arg0: i64, %arg1: i64):
+      %0 = arith.addi %arg0, %arg1 : i64
+      scf.reduce.return %0 : i64
+    }
+    scf.reduce (%c3) : i64 {
+    ^bb0(%arg0: i64, %arg1: i64):
+      %0 = arith.maxsi %arg0, %arg1 : i64
+      scf.reduce.return %0 : i64
+    }
+  }
+  return
+}
+
+// CHECK-LABEL: func @tile_reductions
+// CHECK:         scf.parallel
+// CHECK:           scf.parallel
+// CHECK:             scf.reduce
+// CHECK:             }
+// CHECK:             scf.reduce
+// CHECK:             }
+// CHECK:           }
+// CHECK:           scf.reduce
+// CHECK:           }
+// CHECK:           scf.reduce
+// CHECK:           }
+// CHECK:         }
+// CHECK:       }

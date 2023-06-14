@@ -17,6 +17,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
+#include "mlir/IR/IRMapping.h"
 
 namespace mlir {
 #define GEN_PASS_DEF_SCFPARALLELLOOPTILING
@@ -79,7 +80,7 @@ mlir::scf::tileParallelLoop(ParallelOp op, ArrayRef<int64_t> tileSizes,
                                                std::get<1>(step)));
   }
   auto outerLoop = b.create<ParallelOp>(op.getLoc(), op.getLowerBound(),
-                                        op.getUpperBound(), newSteps);
+                                        op.getUpperBound(), newSteps, op.getInitVals());
   b.setInsertionPointToStart(outerLoop.getBody());
 
   // Compute min(size, dim - offset) to avoid out-of-bounds accesses.
@@ -135,7 +136,7 @@ mlir::scf::tileParallelLoop(ParallelOp op, ArrayRef<int64_t> tileSizes,
   }
   auto innerLoop = b.create<ParallelOp>(
       op.getLoc(), SmallVector<Value, 2>(newBounds.size(), zero), newBounds,
-      op.getStep());
+      op.getStep(), op.getInitVals());
 
   if (noMinMaxBounds && needInboundCheck) {
     b.setInsertionPointToStart(innerLoop.getBody());
@@ -180,6 +181,23 @@ mlir::scf::tileParallelLoop(ParallelOp op, ArrayRef<int64_t> tileSizes,
     }
   }
 
+  // If we have any reductions, we'll add another reduction inside the outer
+  // loop that reduces the results of the inner loop.
+  if (op.getNumReductions() > 0) {
+    b.setInsertionPointAfter(innerLoop);
+    for (const auto& it : llvm::enumerate(innerLoop.getOps<ReduceOp>())) {
+      IRMapping mapping;
+      auto index = it.index();
+      ReduceOp redop = it.value();
+      mapping.map(redop.getOperand(), innerLoop.getResults()[index]);
+      b.clone(*redop.getOperation(), mapping);
+    }
+  }
+  // Remap the reduction outputs of the original operation.
+  for (auto [oldResult, newResult] : llvm::zip(op.getResults(), outerLoop.getResults())) {
+    oldResult.replaceAllUsesWith(newResult);
+  }
+
   op.erase();
   return std::make_pair(outerLoop, innerLoop);
 }
@@ -199,9 +217,7 @@ struct ParallelLoopTiling
     SmallVector<ParallelOp, 2> innermostPloops;
     getInnermostParallelLoops(parentOp, innermostPloops);
     for (ParallelOp ploop : innermostPloops) {
-      // FIXME: Add reduction support.
-      if (ploop.getNumReductions() == 0)
-        tileParallelLoop(ploop, tileSizes, noMinMaxBounds);
+      tileParallelLoop(ploop, tileSizes, noMinMaxBounds);
     }
   }
 };

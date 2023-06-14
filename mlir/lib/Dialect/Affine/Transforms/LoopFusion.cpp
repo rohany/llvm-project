@@ -12,6 +12,7 @@
 
 #include "mlir/Dialect/Affine/Passes.h"
 
+#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/AffineStructures.h"
 #include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/Utils.h"
@@ -24,6 +25,7 @@
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/Transforms/Passes.h"
+#include "mlir/Transforms/TopologicalSortUtils.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -131,6 +133,22 @@ static bool canRemoveSrcNodeAfterFusion(
   }
 
   return true;
+}
+
+/// resultsFlowIntoTarget returns true if the results of the src
+/// loop can flow into any operations inside dst.
+static bool resultsFlowIntoTarget(AffineForOp src, AffineForOp dst) {
+  for (auto result : src->getResults()) {
+    SetVector<Operation*> slice;
+    getForwardSlice(result, &slice);
+    for (auto op : slice) {
+      SmallVector<AffineForOp, 4> loops;
+      getAffineForIVs(*op, &loops);
+      if (llvm::is_contained(loops, dst))
+        return true;
+    }
+  }
+  return false;
 }
 
 /// Returns in 'srcIdCandidates' the producer fusion candidates for consumer
@@ -950,11 +968,6 @@ public:
     // Skip if 'dstNode' is not a loop nest.
     if (!isa<AffineForOp>(dstNode->op))
       return;
-    // Skip if 'dstNode' is a loop nest returning values.
-    // TODO: support loop nests that return values.
-    if (dstNode->op->getNumResults() > 0)
-      return;
-
     LLVM_DEBUG(llvm::dbgs() << "Evaluating dst loop " << dstId << "\n");
 
     // Sink sequential loops in 'dstNode' (and thus raise parallel loops)
@@ -984,10 +997,12 @@ public:
         LLVM_DEBUG(llvm::dbgs() << "Evaluating src loop " << srcId
                                 << " for dst loop " << dstId << "\n");
 
-        // Skip if 'srcNode' is a loop nest returning values.
-        // TODO: support loop nests that return values.
-        if (isa<AffineForOp>(srcNode->op) && srcNode->op->getNumResults() > 0)
+        // If either loop has a return value that flows into
+        // each other, then we cannot the loops together.
+        if (resultsFlowIntoTarget(srcAffineForOp, dstAffineForOp) || 
+            resultsFlowIntoTarget(dstAffineForOp, srcAffineForOp)) {
           continue;
+        }
 
         DenseSet<Value> producerConsumerMemrefs;
         gatherProducerConsumerMemrefs(srcId, dstId, mdg,
@@ -1114,7 +1129,8 @@ public:
         }
 
         // Fuse computation slice of 'srcLoopNest' into 'dstLoopNest'.
-        fuseLoops(srcAffineForOp, dstAffineForOp, bestSlice);
+        fuseLoops(srcAffineForOp, dstAffineForOp, bestSlice, mdg, true);
+        dstAffineForOp = cast<AffineForOp>(dstNode->op);
         dstNodeChanged = true;
 
         LLVM_DEBUG(llvm::dbgs()
@@ -1122,9 +1138,13 @@ public:
                    << " at depth " << bestDstLoopDepth << ":\n"
                    << dstAffineForOp << "\n");
 
+        // TODO (rohany): Similiarly as below, I don't know why this check
+        //  exists, and it can be wrong when fusedLoopInsPoint has been
+        //  erased.
         // Move 'dstAffineForOp' before 'insertPointInst' if needed.
-        if (fusedLoopInsPoint != dstAffineForOp)
+        if (fusedLoopInsPoint->getBlock() != nullptr && fusedLoopInsPoint != dstAffineForOp) {
           dstAffineForOp->moveBefore(fusedLoopInsPoint);
+        }
 
         // Update edges between 'srcNode' and 'dstNode'.
         mdg->updateEdges(srcNode->id, dstNode->id, privateMemrefs,
@@ -1299,14 +1319,23 @@ public:
       bool isInnermostInsertion = (bestDstLoopDepth == dstLoopDepthTest);
       // Fuse computation slice of 'sibLoopNest' into 'dstLoopNest'.
       affine::fuseLoops(sibAffineForOp, dstAffineForOp,
-                        depthSliceUnions[bestDstLoopDepth - 1],
-                        isInnermostInsertion);
+       depthSliceUnions[bestDstLoopDepth - 1],
+       mdg, isInnermostInsertion);
+      auto newDstAffineForOp = dstNode->op;
 
-      auto dstForInst = cast<AffineForOp>(dstNode->op);
-      // Update operation position of fused loop nest (if needed).
-      if (insertPointInst != dstForInst) {
-        dstForInst->moveBefore(insertPointInst);
+      // TODO (rohany): I don't actually understand what this is doing. It appears to
+      //  also be moving things incorrectly when the fused loop can return values.
+      if (newDstAffineForOp == dstNode->op) {
+        auto dstForInst = newDstAffineForOp;
+        // Update operation position of fused loop nest (if needed). We have to guard
+        // here in case the original insertPointInst loop was erased.
+        // TODO (rohany): Is there a more canonical way to check whether an operation
+        //  has been deleted?
+        if (insertPointInst->getBlock() != nullptr && insertPointInst != dstForInst) {
+          dstForInst->moveBefore(insertPointInst);
+        }
       }
+      
       // Update data dependence graph state post fusion.
       updateStateAfterSiblingFusion(sibNode, dstNode);
     }
@@ -1382,6 +1411,14 @@ public:
         auto memref = loadOp.getMemRef();
         if (dstNode->getLoadOpCount(memref) == 0)
           continue;
+
+        // If either loop has a return value that flows into
+        // each other, then we cannot the loops together.
+        if (resultsFlowIntoTarget(cast<AffineForOp>(sibNode->op), cast<AffineForOp>(dstNode->op)) || 
+            resultsFlowIntoTarget(cast<AffineForOp>(dstNode->op), cast<AffineForOp>(sibNode->op))) {
+          return false;
+        }
+
         // Check if 'sibNode/dstNode' can be input-reuse fused on 'memref'.
         if (canFuseWithSibNode(sibNode, memref)) {
           visitedSibNodeIds->insert(sibNode->id);
@@ -1503,9 +1540,15 @@ void LoopFusion::runOnBlock(Block *block) {
 }
 
 void LoopFusion::runOnOperation() {
-  for (Region &region : getOperation()->getRegions())
-    for (Block &block : region.getBlocks())
+  for (Region &region : getOperation()->getRegions()) {
+    for (Block &block : region.getBlocks()) {
       runOnBlock(&block);
+      // Code motion caused by reordering results of loops with reductions
+      // may cause invalid dominance of operations. Topologically sort each
+      // block we operate on to ensure that dominance is preserved.
+      sortTopologically(&block);
+    }
+  }
 }
 
 std::unique_ptr<Pass> mlir::affine::createLoopFusionPass(

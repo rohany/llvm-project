@@ -1,5 +1,6 @@
 // RUN: mlir-opt -allow-unregistered-dialect %s -pass-pipeline='builtin.module(func.func(affine-loop-fusion{mode=producer}))' -split-input-file | FileCheck %s --check-prefix=PRODUCER-CONSUMER
 // RUN: mlir-opt -allow-unregistered-dialect %s -pass-pipeline='builtin.module(func.func(affine-loop-fusion{fusion-maximal mode=sibling}))' -split-input-file | FileCheck %s --check-prefix=SIBLING-MAXIMAL
+// RUN: mlir-opt -allow-unregistered-dialect %s -pass-pipeline='builtin.module(func.func(affine-loop-fusion{fusion-maximal}))' -split-input-file | FileCheck %s --check-prefix=BOTH-MAXIMAL
 
 // Part I of fusion tests in  mlir/test/Transforms/loop-fusion.mlir.
 // Part II of fusion tests in mlir/test/Transforms/loop-fusion-2.mlir
@@ -226,3 +227,272 @@ func.func @fuse_higher_dim_nest_into_lower_dim_nest() {
   // PRODUCER-CONSUMER:      return
   return
 }
+
+// -----
+
+// PRODUCER-CONSUMER-LABEL: func.func @producer_consumer_reduction_fusion
+func.func @producer_consumer_reduction_fusion(%input : memref<10xf32>, %output : memref<10xf32>) -> f32 {
+  %zero = arith.constant 0. : f32
+  %one = arith.constant 1. : f32
+  affine.for %i = 0 to 10 {
+    %0 = affine.load %input[%i] : memref<10xf32>
+    %2 = arith.addf %0, %one : f32
+    affine.store %2, %output[%i] : memref<10xf32>
+  }
+  %reduceval = affine.for %i = 0 to 10 iter_args(%sum = %zero) -> (f32) {
+    %0 = affine.load %output[%i] : memref<10xf32>
+    %1 = arith.addf %0, %sum : f32
+    affine.yield %1 : f32
+  }
+  return %reduceval : f32
+}
+
+// PRODUCER-CONSUMER:       affine.for %{{.*}} = 0 to 10 iter_args(%{{.*}} = %{{.*}}) -> (f32) {
+// PRODUCER-CONSUMER-NEXT:    affine.load
+// PRODUCER-CONSUMER-NEXT:    arith.addf
+// PRODUCER-CONSUMER-NEXT:    affine.store
+// PRODUCER-CONSUMER-NEXT:    affine.load
+// PRODUCER-CONSUMER-NEXT:    arith.addf
+// PRODUCER-CONSUMER-NEXT:    affine.yield
+// PRODUCER-CONSUMER-NEXT:  }
+
+// -----
+
+// SIBLING-MAXIMAL-LABEL: func.func @sibling_reduction_fusion
+func.func @sibling_reduction_fusion(%input : memref<10xf32>, %output : memref<10xf32>) -> f32 {
+  %zero = arith.constant 0. : f32
+  %one = arith.constant 1. : f32
+  %reduceval = affine.for %i = 0 to 10 iter_args(%sum = %zero) -> (f32) {
+    %0 = affine.load %input[%i] : memref<10xf32>
+    %1 = arith.addf %0, %sum : f32
+    affine.yield %1 : f32
+  }
+  %double = arith.addf %reduceval, %reduceval : f32
+  affine.for %i = 0 to 10 {
+    %0 = affine.load %input[%i] : memref<10xf32>
+    %2 = arith.addf %0, %one : f32
+    affine.store %2, %output[%i] : memref<10xf32>
+  }
+  return %double : f32
+}
+
+// SIBLING-MAXIMAL:       %{{.*}} = affine.for %{{.*}} = 0 to 10 iter_args(%{{.*}} = %{{.*}}) -> (f32) {
+// SIBLING-MAXIMAL-NEXT:    affine.load
+// SIBLING-MAXIMAL-NEXT:    arith.addf
+// SIBLING-MAXIMAL-NEXT:    affine.load
+// SIBLING-MAXIMAL-NEXT:    arith.addf
+// SIBLING-MAXIMAL-NEXT:    affine.store
+// SIBLING-MAXIMAL-NEXT:    affine.yield
+// SIBLING-MAXIMAL-NEXT:  }
+// SIBLING-MAXIMAL-NEXT:  arith.addf
+// SIBLING-MAXIMAL-NEXT:  return
+
+// -----
+
+// SIBLING-MAXIMAL-LABEL: func.func @sibling_reduction_flow_blocks_fusion
+func.func @sibling_reduction_flow_blocks_fusion(%input : memref<10xf32>, %output : memref<10xf32>) -> f32 {
+  %zero = arith.constant 0. : f32
+  %one = arith.constant 1. : f32
+  %reduceval = affine.for %i = 0 to 10 iter_args(%sum = %zero) -> (f32) {
+    %0 = affine.load %input[%i] : memref<10xf32>
+    %1 = arith.addf %0, %sum : f32
+    affine.yield %1 : f32
+  }
+  %double = arith.addf %reduceval, %reduceval : f32
+  affine.for %i = 0 to 10 {
+    %0 = affine.load %input[%i] : memref<10xf32>
+    %2 = arith.addf %0, %double : f32
+    affine.store %2, %output[%i] : memref<10xf32>
+  }
+  return %double : f32
+}
+
+// SIBLING-MAXIMAL:       %{{.*}} = affine.for %{{.*}} = 0 to 10 iter_args(%{{.*}} = %{{.*}}) -> (f32) {
+// SIBLING-MAXIMAL-NEXT:    affine.load
+// SIBLING-MAXIMAL-NEXT:    arith.addf
+// SIBLING-MAXIMAL-NEXT:    affine.yield
+// SIBLING-MAXIMAL-NEXT:  }
+// SIBLING-MAXIMAL-NEXT:  arith.addf
+// SIBLING-MAXIMAL-NEXT:  affine.for %{{.*}} = 0 to 10 {
+// SIBLING-MAXIMAL-NEXT:    affine.load
+// SIBLING-MAXIMAL-NEXT:    arith.addf
+// SIBLING-MAXIMAL-NEXT:    affine.store
+// SIBLING-MAXIMAL-NEXT:  }
+// SIBLING-MAXIMAL-NEXT:  return
+
+// -----
+
+// PRODUCER-CONSUMER-LABEL: func.func @producer_consumer_flow_blocks_fusion
+func.func @producer_consumer_flow_blocks_fusion(%input : memref<10xf32>, %output : memref<10xf32>) -> f32 {
+  %zero = arith.constant 0. : f32
+  %one = arith.constant 1. : f32
+  %reduceval = affine.for %i = 0 to 10 iter_args(%sum = %zero) -> (f32) {
+    %0 = affine.load %input[%i] : memref<10xf32>
+    %1 = arith.addf %0, %sum : f32
+    affine.store %1, %output[%i] : memref<10xf32>
+    affine.yield %1 : f32
+  }
+  %double = arith.addf %reduceval, %reduceval : f32
+  affine.for %i = 0 to 10 {
+    %0 = affine.load %input[%i] : memref<10xf32>
+    %2 = arith.addf %0, %double : f32
+    affine.store %2, %output[%i] : memref<10xf32>
+  }
+  return %double : f32
+}
+
+// PRODUCER-CONSUMER:       %{{.*}} = affine.for %{{.*}} = 0 to 10 iter_args(%{{.*}} = %{{.*}}) -> (f32) {
+// PRODUCER-CONSUMER-NEXT:    affine.load
+// PRODUCER-CONSUMER-NEXT:    arith.addf
+// PRODUCER-CONSUMER-NEXT:    affine.store
+// PRODUCER-CONSUMER-NEXT:    affine.yield
+// PRODUCER-CONSUMER-NEXT:  }
+// PRODUCER-CONSUMER-NEXT:  arith.addf
+// PRODUCER-CONSUMER-NEXT:  affine.for %{{.*}} = 0 to 10 {
+// PRODUCER-CONSUMER-NEXT:    affine.load
+// PRODUCER-CONSUMER-NEXT:    arith.addf
+// PRODUCER-CONSUMER-NEXT:    affine.store
+// PRODUCER-CONSUMER-NEXT:  }
+// PRODUCER-CONSUMER-NEXT:  return
+
+// -----
+
+// PRODUCER-CONSUMER-LABEL: func.func @producer_consumer_reduction_fusion_2
+func.func @producer_consumer_reduction_fusion_2(%input : memref<10xf32>, %output : memref<10xf32>) -> f32 {
+  %zero = arith.constant 0. : f32
+  %one = arith.constant 1. : f32
+  %reduceval = affine.for %i = 0 to 10 iter_args(%sum = %zero) -> (f32) {
+    %0 = affine.load %input[%i] : memref<10xf32>
+    %1 = arith.addf %0, %sum : f32
+    %2 = arith.addf %0, %one : f32
+    affine.store %2, %output[%i] : memref<10xf32>
+    affine.yield %1 : f32
+  }
+  %double = arith.addf %reduceval, %reduceval : f32
+  affine.for %i = 0 to 10 {
+    %0 = affine.load %output[%i] : memref<10xf32>
+    %2 = arith.addf %0, %one : f32
+    affine.store %2, %output[%i] : memref<10xf32>
+  }
+  return %double : f32
+}
+
+// PRODUCER-CONSUMER:       %{{.*}} = affine.for %{{.*}} = 0 to 10 iter_args(%{{.*}} = %{{.*}}) -> (f32) {
+// PRODUCER-CONSUMER-NEXT:    affine.load
+// PRODUCER-CONSUMER-NEXT:    arith.addf
+// PRODUCER-CONSUMER-NEXT:    arith.addf
+// PRODUCER-CONSUMER-NEXT:    affine.store
+// PRODUCER-CONSUMER-NEXT:    affine.load
+// PRODUCER-CONSUMER-NEXT:    arith.addf
+// PRODUCER-CONSUMER-NEXT:    affine.store
+// PRODUCER-CONSUMER-NEXT:    affine.yield
+// PRODUCER-CONSUMER-NEXT:  }
+// PRODUCER-CONSUMER-NEXT:  arith.addf
+// PRODUCER-CONSUMER-NEXT:  return
+
+// -----
+
+// SIBLING-MAXIMAL: func.func @sibling_fusion_moves_loop_correctly
+func.func @sibling_fusion_moves_loop_correctly(%arg0: memref<?xf64>, %arg1: memref<?xf64>, %arg2: memref<?xf64>, %arg3: memref<f64>) {
+  %cst = arith.constant 0.000000e+00 : f64
+  %c0 = arith.constant 0 : index
+  %0 = memref.dim %arg0, %c0 : memref<?xf64>
+  %1 = affine.for %i = 0 to %0 iter_args(%arg17 = %cst) -> (f64) {
+    %1 = affine.load %arg0[%i] : memref<?xf64>
+    %2 = affine.load %arg1[%i] : memref<?xf64>
+    %3 = arith.mulf %1, %2 : f64
+    %4 = arith.addf %3, %arg17 : f64
+    affine.yield %4 : f64
+  }
+  %2 = affine.load %arg3[] : memref<f64>
+  %3 = arith.addf %2, %1 : f64
+  affine.store %3, %arg3[] : memref<f64>
+  affine.for %i = 0 to %0 {
+    %4 = affine.load %arg1[%i] : memref<?xf64>
+    affine.store %4, %arg2[%i] : memref<?xf64>
+  }
+  return
+}
+
+// SIBLING-MAXIMAL:      %{{.*}} = affine.for %{{.*}} = 0 to %{{.*}} iter_args(%{{.*}} = %{{.*}}) -> (f64) {
+// SIBLING-MAXIMAL-NEXT:   affine.load
+// SIBLING-MAXIMAL-NEXT:   affine.load
+// SIBLING-MAXIMAL-NEXT:   arith.mulf
+// SIBLING-MAXIMAL-NEXT:   arith.addf
+// SIBLING-MAXIMAL-NEXT:   affine.load
+// SIBLING-MAXIMAL-NEXT:   affine.store
+// SIBLING-MAXIMAL-NEXT:   affine.yield
+// SIBLING-MAXIMAL-NEXT: }
+// SIBLING-MAXIMAL-NEXT: arith.addf
+// SIBLING-MAXIMAL-NEXT: affine.store
+// SIBLING-MAXIMAL-NEXT: return
+
+// -----
+
+// BOTH-MAXIMAL: func.func @proper_reduction_code_motion
+func.func @proper_reduction_code_motion(%arg0: memref<f64>, %arg1: memref<?xf64>, %arg2: memref<?xf64>, %arg3: memref<f64>, %arg4: memref<f64>, %arg5: memref<?xf64>, %arg6: memref<f64>, %arg7: memref<f64>, %arg8: memref<f64>, %arg9: memref<f64>) attributes {llvm.emit_c_interface} {
+  %cst = arith.constant 0.000000e+00 : f64
+  %c0 = arith.constant 0 : index
+  %0 = memref.dim %arg2, %c0 : memref<?xf64>
+  %alloc = memref.alloc(%0) : memref<?xf64>
+  affine.for %arg20 = 0 to %0 {
+    %12 = affine.load %arg2[%arg20] : memref<?xf64>
+    %13 = affine.load %alloc[%arg20] : memref<?xf64>
+    %14 = arith.subf %12, %13 : f64
+    affine.store %14, %arg5[%arg20] : memref<?xf64>
+  }
+  %2 = affine.load %arg3[] : memref<f64>
+  affine.store %2, %arg8[] : memref<f64>
+  %4 = affine.for %arg20 = 0 to %0 iter_args(%arg21 = %cst) -> (f64) {
+    %12 = affine.load %arg5[%arg20] : memref<?xf64>
+    %13 = affine.load %arg2[%arg20] : memref<?xf64>
+    %14 = arith.mulf %12, %13 : f64
+    %15 = arith.addf %14, %arg21 : f64
+    affine.yield %15 : f64
+  }
+  %5 = affine.load %arg8[] : memref<f64>
+  %6 = arith.addf %5, %4 : f64
+  affine.store %6, %arg8[] : memref<f64>
+  %7 = affine.load %arg4[] : memref<f64>
+  affine.store %7, %arg9[] : memref<f64>
+  %9 = affine.for %arg20 = 0 to %0 iter_args(%arg21 = %cst) -> (f64) {
+    %12 = affine.load %arg2[%arg20] : memref<?xf64>
+    %13 = arith.mulf %12, %12 : f64
+    %14 = arith.addf %13, %arg21 : f64
+    affine.yield %14 : f64
+  }
+  %10 = affine.load %arg9[] : memref<f64>
+  %11 = arith.addf %10, %9 : f64
+  affine.store %11, %arg9[] : memref<f64>
+  return
+}
+
+// BOTH-MAXIMAL:      arith.constant
+// BOTH-MAXIMAL:      arith.constant
+// BOTH-MAXIMAL-NEXT: memref.dim
+// BOTH-MAXIMAL-NEXT: memref.alloc
+// BOTH-MAXIMAL-NEXT: affine.load
+// BOTH-MAXIMAL-NEXT: affine.store
+// BOTH-MAXIMAL-NEXT: affine.load
+// BOTH-MAXIMAL-NEXT: affine.load
+// BOTH-MAXIMAL-NEXT: affine.store
+// BOTH-MAXIMAL-NEXT: affine.for %{{.*}} = 0 to %{{.*}} iter_args(%{{.*}} = %{{.*}}, %{{.*}} = %{{.*}}) -> (f64, f64) {
+// BOTH-MAXIMAL-NEXT:   affine.load
+// BOTH-MAXIMAL-NEXT:   affine.load
+// BOTH-MAXIMAL-NEXT:   arith.subf
+// BOTH-MAXIMAL-NEXT:   affine.store
+// BOTH-MAXIMAL-NEXT:   affine.load
+// BOTH-MAXIMAL-NEXT:   affine.load
+// BOTH-MAXIMAL-NEXT:   arith.mulf
+// BOTH-MAXIMAL-NEXT:   arith.addf
+// BOTH-MAXIMAL-NEXT:   affine.load
+// BOTH-MAXIMAL-NEXT:   arith.mulf
+// BOTH-MAXIMAL-NEXT:   arith.addf
+// BOTH-MAXIMAL-NEXT:   affine.yield
+// BOTH-MAXIMAL-NEXT: }
+// BOTH-MAXIMAL-NEXT: affine.load
+// BOTH-MAXIMAL-NEXT: arith.addf
+// BOTH-MAXIMAL-NEXT: affine.store
+// BOTH-MAXIMAL-NEXT: arith.addf
+// BOTH-MAXIMAL-NEXT: affine.store
+// BOTH-MAXIMAL-NEXT: return

@@ -632,6 +632,7 @@ func.func @should_not_fuse_dest_loop_nest_return_value(
   // CHECK-NEXT:    affine.store %{{.*}}, %{{.*}}[%{{.*}}] : memref<10xf32>
   // CHECK-NEXT:  }
   // CHECK:       affine.for %{{.*}} = 0 to 10 step 2 iter_args(%{{.*}} = %{{.*}}) -> (f32) {
+  // CHECK-NEXT:    affine.store
   // CHECK-NEXT:    affine.load
   // CHECK-NEXT:    affine.yield
   // CHECK-NEXT:  }

@@ -356,7 +356,8 @@ FusionResult mlir::affine::canFuseLoops(AffineForOp srcForOp,
 /// Patch the loop body of a forOp that is a single iteration reduction loop
 /// into its containing block.
 static LogicalResult promoteSingleIterReductionLoop(AffineForOp forOp,
-                                                    bool siblingFusionUser) {
+                                                  bool siblingFusionUser,
+                                                  MemRefDependenceGraph* mdg) {
   // Check if the reduction loop is a single iteration loop.
   std::optional<uint64_t> tripCount = getConstantTripCount(forOp);
   if (!tripCount || *tripCount != 1)
@@ -371,6 +372,15 @@ static LogicalResult promoteSingleIterReductionLoop(AffineForOp forOp,
   AffineForOp parentForOp = forOp->getParentOfType<AffineForOp>();
   AffineForOp newLoop = replaceForOpWithNewYields(
       b, parentForOp, iterOperands, newOperands, forOp.getRegionIterArgs());
+  // If there is a MemRefDependenceGraph to update, make the change.
+  if (mdg != nullptr) {
+    // It's possible that the for loop we are promoting is not being
+    // tracked in the mdg. Only try to update it if it is.
+    auto node = mdg->getForOpNode(parentForOp);
+    if (node != nullptr) {
+      node->op = newLoop;
+    }
+  }
 
   // For sibling-fusion users, collect operations that use the results of the
   // `forOp` outside the new parent loop that has absorbed all its iter args
@@ -392,9 +402,10 @@ static LogicalResult promoteSingleIterReductionLoop(AffineForOp forOp,
   // For sibling-fusion users, move operations that use the results of the
   // `forOp` outside the new parent loop
   if (siblingFusionUser) {
-    topologicalSort(forwardSlice);
-    for (Operation *op : llvm::reverse(forwardSlice))
+    forwardSlice = topologicalSort(forwardSlice);
+    for (Operation *op : llvm::reverse(forwardSlice)) {
       op->moveAfter(newLoop);
+    }
   }
   // Replace the induction variable.
   auto iv = forOp.getInductionVar();
@@ -420,11 +431,20 @@ static LogicalResult promoteSingleIterReductionLoop(AffineForOp forOp,
 /// and source slice loop bounds specified in 'srcSlice'.
 void mlir::affine::fuseLoops(AffineForOp srcForOp, AffineForOp dstForOp,
                              const ComputationSliceState &srcSlice,
+                             MemRefDependenceGraph* mdg,
                              bool isInnermostSiblingInsertion) {
   // Clone 'srcForOp' into 'dstForOp' at 'srcSlice->insertPoint'.
   OpBuilder b(srcSlice.insertPoint->getBlock(), srcSlice.insertPoint);
   IRMapping mapper;
-  b.clone(*srcForOp, mapper);
+  auto clonedFor = b.clone(*srcForOp, mapper);
+  // Remap any results of the initial AffineForOp to results
+  // of the cloned AffineForOp. This temporarily creates
+  // invalid IR, but the single iteration promotion operation
+  // will clean up the IR with an additional set of remaps on
+  // the cloned loop.
+  for (unsigned i = 0, e = srcForOp.getNumResults(); i != e; ++i) {
+    srcForOp.getResult(i).replaceAllUsesWith(clonedFor->getResult(i));
+  }
 
   // Update 'sliceLoopNest' upper and lower bounds from computed 'srcSlice'.
   SmallVector<AffineForOp, 4> sliceLoops;
@@ -454,13 +474,14 @@ void mlir::affine::fuseLoops(AffineForOp srcForOp, AffineForOp dstForOp,
   // Fix up and if possible, eliminate single iteration loops.
   for (AffineForOp forOp : sliceLoops) {
     if (isLoopParallelAndContainsReduction(forOp) &&
-        isInnermostSiblingInsertion && srcIsUnitSlice())
+        (isInnermostSiblingInsertion) && srcIsUnitSlice()) {
       // Patch reduction loop - only ones that are sibling-fused with the
-      // destination loop - into the parent loop.
-      (void)promoteSingleIterReductionLoop(forOp, true);
-    else
+      // destination loop - into the parent loop. 
+      (void)promoteSingleIterReductionLoop(forOp, true, mdg);
+    } else {
       // Promote any single iteration slice loops.
       (void)promoteIfSingleIteration(forOp);
+    }
   }
 }
 

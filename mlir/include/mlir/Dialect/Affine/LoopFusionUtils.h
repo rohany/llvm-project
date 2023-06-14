@@ -26,6 +26,7 @@ class Operation;
 namespace affine {
 class AffineForOp;
 struct ComputationSliceState;
+struct MemRefDependenceGraph;
 
 // TODO: Extend this module to include utility functions for querying fusion
 // cost/storage reduction, and for performing the loop fusion transformation.
@@ -118,11 +119,14 @@ canFuseLoops(AffineForOp srcForOp, AffineForOp dstForOp, unsigned dstLoopDepth,
 
 /// Fuses 'srcForOp' into 'dstForOp' with destination loop block insertion
 /// point and source slice loop bounds specified in 'srcSlice'.
+/// `mdg` enables rewriting of MemRefDependenceGraph state when fusion
+/// rewrites and replaces for loops within (and including) dstForOp.
 /// `isInnermostSiblingInsertionFusion` enables cleanup of `srcForOp that is a
 /// single-iteration reduction loop being sibling-fused into a 'dstForOp'.
 void fuseLoops(AffineForOp srcForOp, AffineForOp dstForOp,
-               const ComputationSliceState &srcSlice,
-               bool isInnermostSiblingInsertionFusion = false);
+                      const ComputationSliceState &srcSlice,
+                      MemRefDependenceGraph* mdg = nullptr,
+                      bool isInnermostSiblingInsertionFusion = false);
 
 /// LoopNestStats aggregates various per-loop statistics (eg. loop trip count
 /// and operation count) for a loop nest up until (and including) the innermost

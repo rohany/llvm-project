@@ -14,6 +14,7 @@
 
 #include "mlir/Conversion/SCFToGPU/SCFToGPU.h"
 
+#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -32,6 +33,8 @@
 #include "llvm/ADT/Sequence.h"
 #include "llvm/Support/Debug.h"
 #include <optional>
+#include <iostream>
+
 
 #define DEBUG_TYPE "loops-to-gpu"
 
@@ -408,14 +411,15 @@ static unsigned getLaunchOpArgumentNum(gpu::Processor processor) {
 static LogicalResult processParallelLoop(
     ParallelOp parallelOp, gpu::LaunchOp launchOp, IRMapping &cloningMap,
     SmallVectorImpl<Operation *> &worklist,
-    DenseMap<gpu::Processor, Value> &bounds, PatternRewriter &rewriter) {
+    DenseMap<gpu::Processor, Value> &bounds, PatternRewriter &rewriter,
+    DenseMap<ParallelOp, llvm::SmallVector<mlir::Value, 4>>& loopReductionOperands
+  ) {
   // TODO: Verify that this is a valid GPU mapping.
   // processor ids: 0-2 block [x/y/z], 3-5 -> thread [x/y/z], 6-> sequential
   ArrayAttr mapping =
       parallelOp->getAttrOfType<ArrayAttr>(gpu::getMappingAttrName());
 
-  // TODO: Support reductions.
-  if (!mapping || parallelOp.getNumResults() != 0)
+  if (!mapping)
     return failure();
 
   Location loc = parallelOp.getLoc();
@@ -521,18 +525,68 @@ static LogicalResult processParallelLoop(
           }
           bounds[processor] = launchBound;
         }
-        if (!boundIsPrecise) {
-          // We are using an approximation, create a surrounding conditional.
-          Value originalBound = std::get<3>(config);
-          arith::CmpIOp pred = rewriter.create<arith::CmpIOp>(
-              loc, arith::CmpIPredicate::slt, newIndex,
-              cloningMap.lookupOrDefault(originalBound));
-          scf::IfOp ifOp = rewriter.create<scf::IfOp>(loc, pred, false);
+
+        // Thread-level reductions require special handling because of the
+        // loop-bounds guard that we insert to ensure that threads outside
+        // of the loop iteration space have no effects. If a thread-mapped
+        // loop has reductions, we always construct an if-else pair (for simplicity)
+        // where the if returns all operands of the reduction blocks in the
+        // thread-level reduction loop, and the else branch returns the initial
+        // values of the loop. This makes it easy to explain the semantics of
+        // a thread-level reduction: all threads contribute a value to the
+        // reduction, and threads outside of the iteration space contribute
+        // the initial value.
+        if (parallelOp.getNumReductions() > 0 && processor == gpu::Processor::ThreadX) {
+          assert (!loopReductionOperands.contains(parallelOp));
+
+          // If we we can always prove that the iteration space bounds are
+          // tight, generate a vacuously true check.
+          mlir::Value pred;
+          if (boundIsPrecise) {
+            pred = rewriter.create<arith::ConstantIntOp>(loc, 1, 1);
+          } else {
+            Value originalBound = std::get<3>(config);
+            pred = rewriter.create<arith::CmpIOp>(
+                loc, arith::CmpIPredicate::slt, newIndex,
+                cloningMap.lookupOrDefault(originalBound));
+          }
+          auto ifOp = rewriter.create<scf::IfOp>(loc, parallelOp.getResults().getTypes(), pred, true /* withElseRegion */);
+
+          // Map the loop reduction operands of this parallel loop to
+          // the results of the if.
+          for (auto result : ifOp.getResults()) {
+            loopReductionOperands[parallelOp].push_back(result);
+          }
+
+          // TODO (rohany): This feels pretty ugly to me.
+          // The way that this instruction copying is set up (in the driver
+          // function below) makes it hard to know when we're copying an
+          // instruction if we should yield it from the if here. Instead,
+          // when we process the reduction operations later, we'll reach
+          // in an add the operands to this yield.
+          rewriter.setInsertionPointToEnd(ifOp.thenBlock());
+          rewriter.create<scf::YieldOp>(loc);
+
+          // Initialize the else block to just return the initial values.
+          rewriter.setInsertionPointToStart(ifOp.elseBlock());
+          rewriter.create<scf::YieldOp>(loc, parallelOp.getInitVals());
+
           rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
-          // Put a sentinel into the worklist so we know when to pop out of the
-          // if body again. We use the launchOp here, as that cannot be part of
-          // the bodies instruction.
           worklist.push_back(launchOp.getOperation());
+        } else {
+          if (!boundIsPrecise) {
+            // We are using an approximation, create a surrounding conditional.
+            Value originalBound = std::get<3>(config);
+            arith::CmpIOp pred = rewriter.create<arith::CmpIOp>(
+                loc, arith::CmpIPredicate::slt, newIndex,
+                cloningMap.lookupOrDefault(originalBound));
+            scf::IfOp ifOp = rewriter.create<scf::IfOp>(loc, pred, false);
+            rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
+            // Put a sentinel into the worklist so we know when to pop out of the
+            // if body again. We use the launchOp here, as that cannot be part of
+            // the bodies instruction.
+            worklist.push_back(launchOp.getOperation());
+          }
         }
       }
     } else {
@@ -567,6 +621,32 @@ static LogicalResult processParallelLoop(
   return success();
 }
 
+// TODO (rohany): Avoid this duplication, but not sure where in MLIR
+//  this sort of utility might go.
+// matchSimpleReduction is code borrowed from the SCF->OpenMP conversion
+// pass. It checks if the input block matches a simple reduction on
+// the input values, such as an add or max reduction.
+template <typename... OpTy>
+static bool matchSimpleReduction(Block &block) {
+  if (block.empty() || llvm::hasSingleElement(block) ||
+      std::next(block.begin(), 2) != block.end())
+    return false;
+
+  if (block.getNumArguments() != 2)
+    return false;
+
+  SmallVector<Operation *, 4> combinerOps;
+  Value reducedVal = matchReduction({block.getArguments()[1]},
+                                    /*redPos=*/0, combinerOps);
+
+  if (!reducedVal || !isa<BlockArgument>(reducedVal) || combinerOps.size() != 1)
+    return false;
+
+  return isa<OpTy...>(combinerOps[0]) &&
+         isa<scf::ReduceReturnOp>(block.back()) &&
+         block.front().getOperands() == block.getArguments();
+}
+
 /// Lower a `scf.parallel` operation into a corresponding `gpu.launch`
 /// operation.
 ///
@@ -599,6 +679,7 @@ static LogicalResult processParallelLoop(
 LogicalResult
 ParallelToGpuLaunchLowering::matchAndRewrite(ParallelOp parallelOp,
                                              PatternRewriter &rewriter) const {
+  auto ctx = parallelOp.getOperation()->getContext();
   // Mark the operation as visited for recursive legality check.
   parallelOp->setAttr(kVisitedAttrName, rewriter.getUnitAttr());
 
@@ -609,6 +690,71 @@ ParallelToGpuLaunchLowering::matchAndRewrite(ParallelOp parallelOp,
   // Create a launch operation. We start with bound one for all grid/block
   // sizes. Those will be refined later as we discover them from mappings.
   Location loc = parallelOp.getLoc();
+
+  // We introduce initial support for GPU reductions from SCF and allow
+  // for single-dimensional block and thread decompositions of reduction
+  // loops. If there is a reduction at the block level, we'll allocate
+  // a location for each reduction result, and have reductions at the
+  // block level perform atomics into that location.
+  llvm::DenseMap<ParallelOp, int> loopReductionCounters;
+  llvm::SmallVector<gpu::AllocOp, 4> reductionAllocs;
+  // loopReductionOperands maintains remapped operands for reduce
+  // operations, as the rewriting process for reductions will not
+  // just use a cloning map to maintain these.
+  llvm::DenseMap<ParallelOp, llvm::SmallVector<mlir::Value, 4>> loopReductionOperands;
+  // TODO (rohany): Maintaining this is unfortunate.
+  // threadAllReduceOps maintains the AllReduceOp operations generated
+  // for each loop reduction, since we need to move these around later.
+  llvm::SmallVector<gpu::AllReduceOp, 4> threadAllReduceOps;
+  if (parallelOp.getNumReductions() > 0) {
+    rewriter.setInsertionPoint(parallelOp);
+
+    // Ensure that the outer parallel loop we're lowering is mapped
+    // over the BlockX parallel dimension.
+    ArrayAttr allVarsMapping = parallelOp.getOperation()->getAttrOfType<ArrayAttr>(gpu::getMappingAttrName());
+    assert(allVarsMapping.size() == 1);
+    auto mapping = allVarsMapping[0];
+    auto annotation = dyn_cast<gpu::ParallelLoopDimMappingAttr>(mapping);
+    auto processor = annotation.getProcessor();
+    if (processor != gpu::Processor::BlockX) return failure();
+
+    // Allocate a GPU buffer for each reduction.
+    for (unsigned i = 0; i < parallelOp.getNumReductions(); i++) {
+      auto resultType = parallelOp.getResults()[i].getType();
+      auto allocOp = rewriter.create<gpu::AllocOp>(
+        loc, 
+        MemRefType::get(llvm::SmallVector<int64_t, 1>(), resultType),
+        Type() /* asyncToken */,
+        llvm::SmallVector<Value, 1>() /* deps */,
+        llvm::SmallVector<Value, 1>() /* dynamicSizes */,
+        llvm::SmallVector<Value, 1>() /* symbolOperands */
+      );
+      reductionAllocs.push_back(allocOp);
+
+      // Memset is broken, so use memref alloca's + loads and stores.
+      // By broken, I mean that it only supports 32 bit arguments...
+      auto initVal = parallelOp.getInitVals()[i];
+      auto initValMemref = rewriter.create<memref::AllocaOp>(
+        loc,
+        MemRefType::get(llvm::SmallVector<int64_t, 1>(), initVal.getType())
+      );
+      rewriter.create<memref::StoreOp>(
+        loc,
+	initVal,
+	initValMemref,
+        llvm::SmallVector<Value, 1>() /* indices */
+      );
+      // TODO (rohany): How is the source / destination inferred?
+      rewriter.create<gpu::MemcpyOp>(
+        loc,
+        Type() /* asyncToken */,
+        llvm::SmallVector<Value, 1>() /* async dependencies */,
+        allocOp.getResults()[0],
+        initValMemref
+      );
+    }
+  }
+
   Value constantOne =
       rewriter.create<arith::ConstantIndexOp>(parallelOp.getLoc(), 1);
   gpu::LaunchOp launchOp = rewriter.create<gpu::LaunchOp>(
@@ -622,7 +768,7 @@ ParallelToGpuLaunchLowering::matchAndRewrite(ParallelOp parallelOp,
   llvm::DenseMap<gpu::Processor, Value> launchBounds;
   SmallVector<Operation *, 16> worklist;
   if (failed(processParallelLoop(parallelOp, launchOp, cloningMap, worklist,
-                                 launchBounds, rewriter)))
+                                 launchBounds, rewriter, loopReductionOperands)))
     return failure();
 
   // Whether we have seen any side-effects. Reset when leaving an inner scope.
@@ -645,7 +791,7 @@ ParallelToGpuLaunchLowering::matchAndRewrite(ParallelOp parallelOp,
       // Insert that now. This will also update the worklist with the loops
       // body.
       if (failed(processParallelLoop(nestedParallel, launchOp, cloningMap,
-                                     worklist, launchBounds, rewriter)))
+                                     worklist, launchBounds, rewriter, loopReductionOperands)))
         return failure();
     } else if (op == launchOp.getOperation()) {
       // Found our sentinel value. We have finished the operations from one
@@ -654,6 +800,103 @@ ParallelToGpuLaunchLowering::matchAndRewrite(ParallelOp parallelOp,
       rewriter.setInsertionPointAfter(parent);
       leftNestingScope = true;
       seenSideeffects = false;
+    } else if (auto redop = dyn_cast<ReduceOp>(op)) {
+      // Get the processor mapping of the parallel loop this reduction
+      // is occurring within.
+      auto parentLoop = dyn_cast<ParallelOp>(redop.getOperation()->getParentOp());
+      ArrayAttr allVarsMapping =
+          parentLoop->getAttrOfType<ArrayAttr>(gpu::getMappingAttrName());
+      assert(allVarsMapping.size() == 1);
+      auto mapping = allVarsMapping[0];
+      auto annotation = dyn_cast<gpu::ParallelLoopDimMappingAttr>(mapping);
+      gpu::Processor processor = annotation.getProcessor();
+
+      // Extract the body of the reduction, we'll use this to match the type
+      // of reduction in the individual cases.
+      Block &reduction = redop.getRegion().front();
+
+      // The number of reductions that we've seen for each loop corresponds to
+      // which return value of the loop we are reducing for.
+      auto index = loopReductionCounters[parentLoop]++;
+
+      // Block-level reductions will perform atomic rmw operations into a
+      // preallocated buffer.
+      if (processor == gpu::Processor::BlockX) {
+        // Only the first thread of each block needs to contribute
+        // to the reduction.
+        auto threadId = rewriter.create<gpu::ThreadIdOp>(loc, gpu::Dimension::x);
+        auto zeroIdx = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 0);
+        auto cond = rewriter.create<arith::CmpIOp>(
+            loc, arith::CmpIPredicate::eq, threadId, zeroIdx);
+        auto check = rewriter.create<scf::IfOp>(loc, cond, false /* withElseRegion */);
+        {
+          mlir::OpBuilder::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPointToStart(&check.getThenRegion().front());
+          arith::AtomicRMWKind rmwKind;
+          if (matchSimpleReduction<arith::AddFOp>(reduction)) {
+            rmwKind = arith::AtomicRMWKind::addf;
+          } else if (matchSimpleReduction<arith::MaxFOp>(reduction)) {
+            rmwKind = arith::AtomicRMWKind::maxf;
+          } else {
+            return failure();
+          }
+          // Do an atomic rmw into the memref allocation for block-level reductions.
+          rewriter.create<memref::AtomicRMWOp>(
+            loc,
+            rmwKind,
+            cloningMap.lookup(redop.getOperand()),
+            reductionAllocs[index].getOperation()->getResults()[0],
+            llvm::SmallVector<Value, 1>() /* indices */
+          );
+        }
+      } else if (processor == gpu::Processor::ThreadX) {
+        // TODO (rohany): This feels ugly.
+        // When we see a ReduceOp inside a thread-level reduction, we need
+        // to take its operand, and have the IfOp containing that operand
+        // return it. This block adds the mapped operand of the ReduceOp
+        // to the yield of the parent if. Since we always add an IfOp if
+        // we are doing a reduction, we don't have to handle cases here.
+        auto operand = redop.getOperand();
+        auto mappedOperand = cloningMap.lookup(operand);
+        auto parent = mappedOperand.getDefiningOp()->getParentOp();
+        assert (isa<scf::IfOp>(parent));
+        auto parentIfOp = dyn_cast<scf::IfOp>(parent);
+        parentIfOp.thenYield().getResultsMutable().append(mappedOperand);
+        auto finalOperand = loopReductionOperands[parentLoop][index];
+        
+        // Thread-level reductions will simply utilize the GPU allreduce
+        // primitive that gives each thread the reduced value across
+        // an entire block.
+        gpu::AllReduceOperation allReduceOperation;
+        if (matchSimpleReduction<arith::AddFOp>(reduction)) {
+          allReduceOperation = gpu::AllReduceOperation::ADD;
+        } else if (matchSimpleReduction<arith::MaxFOp>(reduction)) {
+          allReduceOperation = gpu::AllReduceOperation::MAX;
+        } else {
+          return failure();
+        }
+        {
+          // We must adjust the rewriter to be after the IfOp
+          // to use the results of the IfOp. Without this move,
+          // we would be generating the AllReduceOp inside the
+          // then branch of the if.
+          OpBuilder::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPointAfter(parent);
+	  // We know that the allreduce operation is uniform because
+	  // we explictly hoist the reduces outside of the thread-level
+	  // iteration space bounds check.
+          auto allReduce = rewriter.create<gpu::AllReduceOp>(
+            loc, 
+            finalOperand, 
+            gpu::AllReduceOperationAttr::get(ctx, allReduceOperation),
+	    true /* uniform */
+          );
+          threadAllReduceOps.push_back(allReduce);
+          cloningMap.map(parentLoop.getResults()[index], allReduce);
+        }
+      } else {
+        return failure();
+      }
     } else {
       // Otherwise we copy it over.
       Operation *clone = rewriter.clone(*op, cloningMap);
@@ -673,6 +916,56 @@ ParallelToGpuLaunchLowering::matchAndRewrite(ParallelOp parallelOp,
   for (auto bound : launchBounds)
     launchOp.setOperand(getLaunchOpArgumentNum(std::get<0>(bound)),
                         std::get<1>(bound));
+
+  // After handling all of the instructions inside the mapped
+  // parallel loops, we need to extract the reduction value 
+  // from each GPU buffer. For each buffer, we allocate a
+  // corresponding buffer on the CPU, and issue a copy.
+  if (parallelOp.getNumReductions() > 0) {
+    rewriter.setInsertionPointAfter(launchOp);
+    for (unsigned i = 0; i < parallelOp.getNumReductions(); i++) {
+      auto result = parallelOp.getResults()[i];
+      auto localReducVal = rewriter.create<memref::AllocaOp>(
+        loc, 
+        MemRefType::get(llvm::SmallVector<int64_t, 1>(), result.getType())
+      );
+      rewriter.create<gpu::MemcpyOp>(
+        loc,
+        Type() /* asyncToken */,
+        llvm::SmallVector<Value, 1>() /* async dependencies */,
+        localReducVal,
+        reductionAllocs[i].getOperation()->getResults()[0]
+      );
+      auto load = rewriter.create<memref::LoadOp>(
+        loc,
+        localReducVal,
+        llvm::SmallVector<mlir::Value, 1>() /* indices */
+      );
+      result.replaceAllUsesWith(load);
+    }
+
+    // TODO (rohany): This feels hacky.
+    // The final step here is to move AllReduceOps produced by
+    // thread-level reductions closer to the definitions
+    // of their operands. The way that scoping affects the
+    // rewriter position causes the operations after
+    // the thread-level reduction to be inserted before the
+    // AllReduceOps. In particular, when we see a ReduceOp
+    // inside a thread-level reduction, we add an AllReduceOp after
+    // the IfOp guard generated for the thread-level loop. But then,
+    // when we pop out of the nesting scope, we set the rewriter
+    // position to be after the IfOp, causing future operations to
+    // be inserted before the AllReduceOps, which is problematic when
+    // data flows from the AllReduceOp to the other instructions. This
+    // fixup phase is an attempt to move the AllReduceOperations as
+    // close as possible to their definition, but is not a gauranteed fix.
+    for (auto redop : threadAllReduceOps) {
+      auto operand = redop.getValue();
+      auto definingOp = operand.getDefiningOp();
+      assert (isa<scf::IfOp>(definingOp));
+      redop.getOperation()->moveAfter(definingOp);
+    }
+  }
 
   rewriter.eraseOp(parallelOp);
   return success();

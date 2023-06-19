@@ -142,8 +142,33 @@ static DiagnosedSilenceableFailure unpackSingleIndexResultPayloadOperations(
 }
 
 //===----------------------------------------------------------------------===//
+// Apply...PatternsOp
+//===----------------------------------------------------------------------===//
+
+void transform::ApplyEraseUnnecessaryInputsPatternsOp::populatePatterns(
+    RewritePatternSet &patterns) {
+  linalg::populateEraseUnnecessaryInputsPatterns(patterns);
+}
+
+void transform::ApplyFoldUnitExtentDimsViaReshapesPatternsOp::populatePatterns(
+    RewritePatternSet &patterns) {
+  linalg::populateFoldUnitExtentDimsViaReshapesPatterns(patterns);
+}
+
+void transform::ApplyFoldUnitExtentDimsViaSlicesPatternsOp::populatePatterns(
+    RewritePatternSet &patterns) {
+  linalg::populateFoldUnitExtentDimsViaSlicesPatterns(patterns);
+}
+
+void transform::ApplyTilingCanonicalizationPatternsOp::populatePatterns(
+    RewritePatternSet &patterns) {
+  linalg::populateLinalgTilingCanonicalizationPatterns(patterns);
+}
+
+//===----------------------------------------------------------------------===//
 // BufferizeToAllocationOp
 //===----------------------------------------------------------------------===//
+
 DiagnosedSilenceableFailure
 transform::BufferizeToAllocationOp::apply(transform::TransformResults &results,
                                           transform::TransformState &state) {
@@ -366,7 +391,7 @@ static Operation *replaceForAllWithNewSignature(
       dominatedUsers.insert(user);
     }
   }
-  if (dominatedUsers.size() == 0)
+  if (dominatedUsers.empty())
     return nullptr;
 
   // Create new scf.forall op
@@ -1594,9 +1619,14 @@ transform::PadOp::applyToOne(LinalgOp target,
   TrackingListener listener(state, *this);
   IRRewriter rewriter(getContext(), &listener);
   LinalgOp paddedOp;
-  FailureOr<SmallVector<Value>> result = rewriteAsPaddedOp(
-      rewriter, target, extractFromI64ArrayAttr(getPaddingDimensions()),
-      paddingValues, packPaddings, paddedOp);
+  SmallVector<int64_t> paddingDimensions =
+      extractFromI64ArrayAttr(getPaddingDimensions());
+  SmallVector<int64_t> padToMultipleOf(paddingDimensions.size(), 1);
+  if (getPadToMultipleOf().has_value())
+    padToMultipleOf = extractFromI64ArrayAttr(*getPadToMultipleOf());
+  FailureOr<SmallVector<Value>> result =
+      rewriteAsPaddedOp(rewriter, target, paddingDimensions, padToMultipleOf,
+                        paddingValues, packPaddings, paddedOp);
   if (succeeded(result)) {
     // We need to perform our own replacement here because this API is still
     // used in patterns that "pad and hoist", for which the replacement values
@@ -1630,7 +1660,11 @@ LogicalResult transform::PadOp::verify() {
                             "integers, found "
                          << getPaddingDimensions();
   }
-
+  if (getPadToMultipleOf().has_value()) {
+    if (getPadToMultipleOf()->size() != paddingDimensions.size()) {
+      return emitOpError() << "expects as many multiples as padding_dimensions";
+    }
+  }
   ArrayAttr transposes = getTransposePaddings();
   for (Attribute attr : transposes) {
     SmallVector<int64_t> transpose = extractFromI64ArrayAttr(attr);
@@ -2391,6 +2425,7 @@ transform::TileOp::apply(TransformResults &transformResults,
   SmallVector<Operation *> tiled;
   SmallVector<SmallVector<Operation *, 4>, 4> loops;
   loops.resize(getLoops().size());
+  bool scalable = getLastTileSizeScalable();
   for (auto [i, op] : llvm::enumerate(targets)) {
     auto tilingInterface = dyn_cast<TilingInterface>(op);
     auto dpsInterface = dyn_cast<DestinationStyleOpInterface>(op);
@@ -2409,10 +2444,21 @@ transform::TileOp::apply(TransformResults &transformResults,
         SmallVector<Value, 4> sizes;
         sizes.reserve(tileSizes.size());
         unsigned dynamicIdx = 0;
-        for (OpFoldResult ofr : getMixedSizes()) {
+        unsigned trailingIdx = getMixedSizes().size() - 1;
+
+        for (auto [ofrIdx, ofr] : llvm::enumerate(getMixedSizes())) {
           if (auto attr = llvm::dyn_cast_if_present<Attribute>(ofr)) {
-            sizes.push_back(b.create<arith::ConstantIndexOp>(
-                getLoc(), cast<IntegerAttr>(attr).getInt()));
+            // Only the trailing tile size is allowed to be scalable atm.
+            if (scalable && (ofrIdx == trailingIdx)) {
+              auto val = b.create<arith::ConstantIndexOp>(
+                  getLoc(), attr.cast<IntegerAttr>().getInt());
+              Value vscale =
+                  b.create<vector::VectorScaleOp>(getLoc(), b.getIndexType());
+              sizes.push_back(b.create<arith::MulIOp>(getLoc(), val, vscale));
+            } else {
+              sizes.push_back(b.create<arith::ConstantIndexOp>(
+                  getLoc(), cast<IntegerAttr>(attr).getInt()));
+            }
             continue;
           }
           ArrayRef<Operation *> dynamicSizes = dynamicSizeProducers[dynamicIdx];
@@ -2507,8 +2553,9 @@ ParseResult transform::TileOp::parse(OpAsmParser &parser,
   DenseI64ArrayAttr staticSizes;
   FunctionType functionalType;
   llvm::SMLoc operandLoc;
+  bool scalable = false;
   if (parser.parseOperand(target) || parser.getCurrentLocation(&operandLoc) ||
-      parseDynamicIndexList(parser, dynamicSizes, staticSizes) ||
+      parseDynamicIndexList(parser, dynamicSizes, staticSizes, &scalable) ||
       parseOptionalInterchange(parser, result) ||
       parser.parseColonType(functionalType))
     return ParseResult::failure();
@@ -2531,6 +2578,10 @@ ParseResult transform::TileOp::parse(OpAsmParser &parser,
     return failure();
   }
 
+  auto scalableAttr = parser.getBuilder().getBoolAttr(scalable);
+  result.addAttribute(getLastTileSizeScalableAttrName(result.name),
+                      scalableAttr);
+
   result.addAttribute(getStaticSizesAttrName(result.name), staticSizes);
   result.addTypes(functionalType.getResults());
   return success();
@@ -2538,7 +2589,9 @@ ParseResult transform::TileOp::parse(OpAsmParser &parser,
 
 void TileOp::print(OpAsmPrinter &p) {
   p << ' ' << getTarget();
-  printDynamicIndexList(p, getOperation(), getDynamicSizes(), getStaticSizes());
+  printDynamicIndexList(p, getOperation(), getDynamicSizes(), getStaticSizes(),
+                        /*valueTypes=*/{}, getLastTileSizeScalableAttr(),
+                        OpAsmParser::Delimiter::Square);
   printOptionalInterchange(p, getInterchange());
   p << " : ";
   p.printFunctionalType(getOperands().getTypes(), getResults().getTypes());
@@ -2983,7 +3036,7 @@ struct VectorizationPattern : public RewritePattern {
     if (!linalgOp)
       return rewriter.notifyMatchFailure(op, "expected Linalg Op");
     return vectorize(rewriter, linalgOp, /*inputVectorSizes=*/{},
-                     vectorizeNDExtract);
+                     /*scalableVecDims=*/{}, vectorizeNDExtract);
   }
 
 private:
@@ -3013,6 +3066,8 @@ transform::VectorizeOp::applyToOne(Operation *target,
   if (!getDisableMultiReductionToContractPatterns())
     vector::populateVectorReductionToContractPatterns(patterns);
 
+  vector::populateSinkVectorBroadcastPatterns(patterns);
+
   patterns.add<linalg::LinalgCopyVTRForwardingPattern,
                linalg::LinalgCopyVTWForwardingPattern>(ctx,
                                                        /*benefit=*/2);
@@ -3038,7 +3093,6 @@ transform::VectorizeOp::applyToOne(Operation *target,
 //===----------------------------------------------------------------------===//
 // MaskedVectorizeOp
 //===----------------------------------------------------------------------===//
-
 DiagnosedSilenceableFailure transform::MaskedVectorizeOp::apply(
     mlir::transform::TransformResults &transformResults,
     mlir::transform::TransformState &state) {
@@ -3085,14 +3139,15 @@ DiagnosedSilenceableFailure transform::MaskedVectorizeOp::apply(
   }
 
   // TODO: Check that the correct number of vectorSizes was provided.
-
+  SmallVector<bool> scalableVecDims(vectorSizes.size(), false);
+  scalableVecDims.back() = getLastVectorSizeScalable();
   for (Operation *target : targets) {
     if (!isa<linalg::LinalgOp, tensor::PadOp>(target)) {
       return mlir::emitSilenceableFailure(target->getLoc())
              << "Unsupported Op, cannot vectorize";
     }
 
-    if (failed(linalg::vectorize(rewriter, target, vectorSizes,
+    if (failed(linalg::vectorize(rewriter, target, vectorSizes, scalableVecDims,
                                  getVectorizeNdExtract()))) {
       return mlir::emitSilenceableFailure(target->getLoc())
              << "Attempted to vectorize, but failed";

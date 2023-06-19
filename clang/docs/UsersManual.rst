@@ -251,6 +251,11 @@ output format of the diagnostics that it generates.
                 ^
                 //
 
+   If the ``NO_COLOR`` environment variable is defined and not empty
+   (regardless of value), color diagnostics are disabled. If ``NO_COLOR`` is
+   defined and ``-fcolor-diagnostics`` is passed on the command line, Clang
+   will honor the command line argument.
+
 .. option:: -fansi-escape-codes
 
    Controls whether ANSI escape codes are used instead of the Windows Console
@@ -573,6 +578,38 @@ output format of the diagnostics that it generates.
              map<
                [float != double],
                [...]>>>
+
+
+.. option:: -fcaret-diagnostics-max-lines:
+
+   Controls how many lines of code clang prints for diagnostics. By default,
+   clang prints a maximum of 16 lines of code.
+
+
+.. option:: -fdiagnostics-show-line-numbers:
+
+   Controls whether clang will print a margin containing the line number on
+   the left of each line of code it prints for diagnostics.
+
+   Default:
+
+    ::
+
+      test.cpp:5:1: error: 'main' must return 'int'
+          5 | void main() {}
+            | ^~~~
+            | int
+
+
+   With -fno-diagnostics-show-line-numbers:
+
+    ::
+
+      test.cpp:5:1: error: 'main' must return 'int'
+      void main() {}
+      ^~~~
+      int
+
 
 
 .. _cl_diag_warning_groups:
@@ -3834,7 +3871,7 @@ codebases.
 
 On ``x86_64-mingw32``, passing i128(by value) is incompatible with the
 Microsoft x64 calling convention. You might need to tweak
-``WinX86_64ABIInfo::classify()`` in lib/CodeGen/TargetInfo.cpp.
+``WinX86_64ABIInfo::classify()`` in lib/CodeGen/Targets/X86.cpp.
 
 For the X86 target, clang supports the `-m16` command line
 argument which enables 16-bit code output. This is broadly similar to

@@ -37,10 +37,8 @@ libcxx/benchmarks/unordered_set_operations.bench.cpp
 libcxx/benchmarks/vector_operations.bench.cpp
 libcxx/include/__algorithm/binary_search.h
 libcxx/include/__algorithm/clamp.h
-libcxx/include/__algorithm/comp.h
 libcxx/include/__algorithm/comp_ref_type.h
 libcxx/include/__algorithm/copy_backward.h
-libcxx/include/__algorithm/copy.h
 libcxx/include/__algorithm/copy_if.h
 libcxx/include/__algorithm/copy_move_common.h
 libcxx/include/__algorithm/copy_n.h
@@ -209,7 +207,6 @@ libcxx/include/__algorithm/transform.h
 libcxx/include/__algorithm/uniform_random_bit_generator_adaptor.h
 libcxx/include/__algorithm/unwrap_iter.h
 libcxx/include/__algorithm/unwrap_range.h
-libcxx/include/__algorithm/upper_bound.h
 libcxx/include/any
 libcxx/include/array
 libcxx/include/__atomic/atomic_base.h
@@ -624,8 +621,11 @@ libcxx/include/__support/win32/locale_win32.h
 libcxx/include/__support/xlocale/__nop_locale_mgmt.h
 libcxx/include/__system_error/errc.h
 libcxx/include/thread
+libcxx/include/__thread/formatter.h
 libcxx/include/__threading_support
 libcxx/include/__thread/poll_with_backoff.h
+libcxx/include/__thread/this_thread.h
+libcxx/include/__thread/thread.h
 libcxx/include/__thread/timed_backoff_policy.h
 libcxx/include/__tree
 libcxx/include/tuple
@@ -833,7 +833,6 @@ libcxx/src/support/runtime/exception_pointer_cxxabi.ipp
 libcxx/src/support/runtime/exception_pointer_glibcxx.ipp
 libcxx/src/support/runtime/exception_pointer_msvc.ipp
 libcxx/src/support/runtime/exception_pointer_unimplemented.ipp
-libcxx/src/support/runtime/new_handler_fallback.ipp
 libcxx/src/support/runtime/stdexcept_default.ipp
 libcxx/src/support/runtime/stdexcept_vcruntime.ipp
 libcxx/src/support/win32/locale_win32.cpp

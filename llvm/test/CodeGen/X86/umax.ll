@@ -371,7 +371,8 @@ define <2 x i64> @test_v2i64(<2 x i64> %a, <2 x i64> %b) nounwind {
 ;
 ; AVX1-LABEL: test_v2i64:
 ; AVX1:       # %bb.0:
-; AVX1-NEXT:    vmovdqa {{.*#+}} xmm2 = [9223372036854775808,9223372036854775808]
+; AVX1-NEXT:    vmovddup {{.*#+}} xmm2 = [9223372036854775808,9223372036854775808]
+; AVX1-NEXT:    # xmm2 = mem[0,0]
 ; AVX1-NEXT:    vpxor %xmm2, %xmm1, %xmm3
 ; AVX1-NEXT:    vpxor %xmm2, %xmm0, %xmm2
 ; AVX1-NEXT:    vpcmpgtq %xmm3, %xmm2, %xmm2
@@ -789,7 +790,7 @@ define <8 x i32> @test_v8i32_1(<8 x i32> %a) nounwind {
 ; AVX1-LABEL: test_v8i32_1:
 ; AVX1:       # %bb.0:
 ; AVX1-NEXT:    vextractf128 $1, %ymm0, %xmm1
-; AVX1-NEXT:    vmovdqa {{.*#+}} xmm2 = [1,1,1,1]
+; AVX1-NEXT:    vbroadcastss {{.*#+}} xmm2 = [1,1,1,1]
 ; AVX1-NEXT:    vpmaxud %xmm2, %xmm1, %xmm1
 ; AVX1-NEXT:    vpmaxud %xmm2, %xmm0, %xmm0
 ; AVX1-NEXT:    vinsertf128 $1, %xmm1, %ymm0, %ymm0
@@ -1258,8 +1259,8 @@ define i16 @test_signbits_i16(i16 %a, i16 %b) nounwind {
 ; X64:       # %bb.0:
 ; X64-NEXT:    movswl %si, %eax
 ; X64-NEXT:    movswl %di, %ecx
-; X64-NEXT:    sarl $15, %ecx
-; X64-NEXT:    sarl $8, %eax
+; X64-NEXT:    shrl $15, %ecx
+; X64-NEXT:    shrl $8, %eax
 ; X64-NEXT:    cmpw %ax, %cx
 ; X64-NEXT:    cmoval %ecx, %eax
 ; X64-NEXT:    # kill: def $ax killed $ax killed $eax
@@ -1269,7 +1270,7 @@ define i16 @test_signbits_i16(i16 %a, i16 %b) nounwind {
 ; X86:       # %bb.0:
 ; X86-NEXT:    movsbl {{[0-9]+}}(%esp), %ecx
 ; X86-NEXT:    movswl {{[0-9]+}}(%esp), %eax
-; X86-NEXT:    sarl $15, %eax
+; X86-NEXT:    shrl $15, %eax
 ; X86-NEXT:    cmpw %cx, %ax
 ; X86-NEXT:    cmovbel %ecx, %eax
 ; X86-NEXT:    # kill: def $ax killed $ax killed $eax

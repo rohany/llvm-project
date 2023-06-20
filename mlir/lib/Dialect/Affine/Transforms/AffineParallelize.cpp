@@ -42,6 +42,10 @@ namespace {
 /// Convert all parallel affine.for op into 1-D affine.parallel op.
 struct AffineParallelize
     : public affine::impl::AffineParallelizeBase<AffineParallelize> {
+   AffineParallelize()
+       : affine::impl::AffineParallelizeBase<AffineParallelize>() {}
+   AffineParallelize(const AffineParallelizeOptions& options)
+       : affine::impl::AffineParallelizeBase<AffineParallelize>(options) {}
   void runOnOperation() override;
 };
 
@@ -94,4 +98,10 @@ void AffineParallelize::runOnOperation() {
 std::unique_ptr<OperationPass<func::FuncOp>>
 mlir::affine::createAffineParallelizePass() {
   return std::make_unique<AffineParallelize>();
+}
+
+std::unique_ptr<OperationPass<func::FuncOp>>
+mlir::affine::createAffineParallelizePass(
+    const affine::AffineParallelizeOptions& options) {
+  return std::make_unique<AffineParallelize>(options);
 }

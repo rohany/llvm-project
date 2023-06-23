@@ -45,8 +45,11 @@ std::unique_ptr<OperationPass<func::FuncOp>>
 createAffineLoopInvariantCodeMotionPass();
 
 /// Creates a pass to convert all parallel affine.for's into 1-d affine.parallel
-/// ops.
+/// ops. We also include a variant of the function that takes in the
+/// AffineParallelizeOptions.
 std::unique_ptr<OperationPass<func::FuncOp>> createAffineParallelizePass();
+std::unique_ptr<OperationPass<func::FuncOp>> createAffineParallelizePass(
+    const affine::AffineParallelizeOptions&);
 
 /// Apply normalization transformations to affine loop-like ops. If
 /// `promoteSingleIter` is true, single iteration loops are promoted (i.e., the

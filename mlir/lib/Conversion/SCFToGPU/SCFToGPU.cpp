@@ -367,19 +367,21 @@ static bool isMappedToProcessor(gpu::Processor processor) {
 }
 
 static unsigned getLaunchOpArgumentNum(gpu::Processor processor) {
+  // The first operand will be the async token, so return operands
+  // offset by 1 from 0.
   switch (processor) {
   case gpu::Processor::BlockX:
-    return 0;
-  case gpu::Processor::BlockY:
     return 1;
-  case gpu::Processor::BlockZ:
+  case gpu::Processor::BlockY:
     return 2;
-  case gpu::Processor::ThreadX:
+  case gpu::Processor::BlockZ:
     return 3;
-  case gpu::Processor::ThreadY:
+  case gpu::Processor::ThreadX:
     return 4;
-  case gpu::Processor::ThreadZ:
+  case gpu::Processor::ThreadY:
     return 5;
+  case gpu::Processor::ThreadZ:
+    return 6;
   default:;
   }
   llvm_unreachable(
@@ -691,6 +693,12 @@ ParallelToGpuLaunchLowering::matchAndRewrite(ParallelOp parallelOp,
   // sizes. Those will be refined later as we discover them from mappings.
   Location loc = parallelOp.getLoc();
 
+  // Maintain an async token to thread through all operations 
+  // if a reduction is performed, because allocations, copies and
+  // the kernel launch will need to be synchronized against each other.
+  rewriter.setInsertionPoint(parallelOp);
+  Type tokenType = rewriter.getType<gpu::AsyncTokenType>();
+  Value token = rewriter.create<gpu::WaitOp>(loc, tokenType, ValueRange{}).getAsyncToken();
   // We introduce initial support for GPU reductions from SCF and allow
   // for single-dimensional block and thread decompositions of reduction
   // loops. If there is a reduction at the block level, we'll allocate
@@ -724,12 +732,13 @@ ParallelToGpuLaunchLowering::matchAndRewrite(ParallelOp parallelOp,
       auto allocOp = rewriter.create<gpu::AllocOp>(
         loc, 
         MemRefType::get(llvm::SmallVector<int64_t, 1>(), resultType),
-        Type() /* asyncToken */,
-        llvm::SmallVector<Value, 1>() /* deps */,
+        tokenType,
+        ValueRange{token} /* deps */,
         llvm::SmallVector<Value, 1>() /* dynamicSizes */,
         llvm::SmallVector<Value, 1>() /* symbolOperands */
       );
       reductionAllocs.push_back(allocOp);
+      token = allocOp.getAsyncToken();
 
       // Memset is broken, so use memref alloca's + loads and stores.
       // By broken, I mean that it only supports 32 bit arguments...
@@ -740,29 +749,39 @@ ParallelToGpuLaunchLowering::matchAndRewrite(ParallelOp parallelOp,
       );
       rewriter.create<memref::StoreOp>(
         loc,
-	initVal,
-	initValMemref,
+        initVal,
+        initValMemref,
         llvm::SmallVector<Value, 1>() /* indices */
       );
-      // TODO (rohany): How is the source / destination inferred?
-      rewriter.create<gpu::MemcpyOp>(
+      auto copyOp = rewriter.create<gpu::MemcpyOp>(
         loc,
-        Type() /* asyncToken */,
-        llvm::SmallVector<Value, 1>() /* async dependencies */,
+        tokenType,
+        ValueRange{token},
         allocOp.getResults()[0],
         initValMemref
       );
+      token = copyOp.getAsyncToken();
     }
   }
 
   Value constantOne =
       rewriter.create<arith::ConstantIndexOp>(parallelOp.getLoc(), 1);
   gpu::LaunchOp launchOp = rewriter.create<gpu::LaunchOp>(
-      parallelOp.getLoc(), constantOne, constantOne, constantOne, constantOne,
-      constantOne, constantOne);
+      parallelOp.getLoc(), 
+      constantOne, 
+      constantOne, 
+      constantOne, 
+      constantOne,
+      constantOne, 
+      constantOne, 
+      nullptr /* dynamicSharedMemorySize */, 
+      tokenType, 
+      ValueRange{token}
+  );
   rewriter.setInsertionPointToEnd(&launchOp.getBody().front());
   rewriter.create<gpu::TerminatorOp>(loc);
   rewriter.setInsertionPointToStart(&launchOp.getBody().front());
+  token = launchOp.getAsyncToken();
 
   IRMapping cloningMap;
   llvm::DenseMap<gpu::Processor, Value> launchBounds;
@@ -929,13 +948,13 @@ ParallelToGpuLaunchLowering::matchAndRewrite(ParallelOp parallelOp,
         loc, 
         MemRefType::get(llvm::SmallVector<int64_t, 1>(), result.getType())
       );
-      rewriter.create<gpu::MemcpyOp>(
+      token = rewriter.create<gpu::MemcpyOp>(
         loc,
-        Type() /* asyncToken */,
-        llvm::SmallVector<Value, 1>() /* async dependencies */,
+        tokenType,
+        ValueRange{token},
         localReducVal,
         reductionAllocs[i].getOperation()->getResults()[0]
-      );
+      ).getAsyncToken();
       auto load = rewriter.create<memref::LoadOp>(
         loc,
         localReducVal,

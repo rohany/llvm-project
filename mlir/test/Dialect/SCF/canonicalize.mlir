@@ -131,6 +131,230 @@ func.func @nested_parallel(%0: memref<?x?x?xf64>) -> memref<?x?x?xf64> {
 
 // -----
 
+func.func @nested_parallel_reduction(%arg0: memref<?x?xf32>) -> f32 {
+  %cst = arith.constant 0.000000e+00 : f32
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %dim = memref.dim %arg0, %c0 : memref<?x?xf32>
+  %dim_0 = memref.dim %arg0, %c1 : memref<?x?xf32>
+  %0 = scf.parallel (%arg1) = (%c0) to (%dim) step (%c1) init (%cst) -> f32 {
+    %0 = scf.parallel (%arg2) = (%c0) to (%dim_0) step (%c1) init (%cst) -> f32 {
+      %0 = memref.load %arg0[%arg1, %arg2] : memref<?x?xf32>
+      scf.reduce(%0)  : f32 {
+      ^bb0(%arg3: f32, %arg4: f32):
+        %1 = arith.addf %arg3, %arg4 : f32
+        scf.reduce.return %1 : f32
+      }
+      scf.yield
+    }
+    scf.reduce(%0)  : f32 {
+    ^bb0(%arg2: f32, %arg3: f32):
+      %1 = arith.addf %arg2, %arg3 : f32
+      scf.reduce.return %1 : f32
+    }
+    scf.yield
+  }
+  return %0 : f32
+}
+
+// CHECK-LABEL:   func @nested_parallel_reduction(
+// CHECK-NEXT:       [[CST:%.*]] = arith.constant 0.000000e+00 : f32
+// CHECK-NEXT:       [[C0:%.*]] = arith.constant 0 : index
+// CHECK-NEXT:       [[C1:%.*]] = arith.constant 1 : index
+// CHECK-NEXT:           [[B0:%.*]] = memref.dim {{.*}}, [[C0]] : memref<?x?xf32>
+// CHECK-NEXT:           [[B1:%.*]] = memref.dim {{.*}}, [[C1]] : memref<?x?xf32>
+// CHECK-NEXT:           [[V2:%.*]] = scf.parallel ([[V0:%.*]], [[V1:%.*]]) = ([[C0]], [[C0]]) to ([[B0]], [[B1]]) step ([[C1]], [[C1]]) init ([[CST]]) -> f32 {
+// CHECK-NEXT:             [[V3:%.*]] = memref.load {{.*}}{{\[}}[[V0]], [[V1]]]
+// CHECK-NEXT:             scf.reduce([[V3]])  : f32
+// CHECK-NEXT:             ^bb0([[A0:%.*]]: f32, [[A1:%.*]]: f32):
+// CHECK-NEXT:               [[V4:%.*]] = arith.addf [[A0]], [[A1]] : f32
+// CHECK-NEXT:               scf.reduce.return [[V4]] : f32
+// CHECK-NEXT:             }
+// CHECK-NEXT:             scf.yield
+// CHECK-NEXT:           }
+// CHECK-NEXT:           return [[V2]] : f32
+
+// -----
+
+func.func @nested_parallel_diff_num_reducs(%arg0: memref<?x?xf32>) -> f32 {
+  %cst = arith.constant 0.000000e+00 : f32
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %dim = memref.dim %arg0, %c0 : memref<?x?xf32>
+  %dim_0 = memref.dim %arg0, %c1 : memref<?x?xf32>
+  %0 = scf.parallel (%arg1) = (%c0) to (%dim) step (%c1) init (%cst) -> f32 {
+    %0, %1 = scf.parallel (%arg2) = (%c0) to (%dim_0) step (%c1) init (%cst, %cst) -> (f32, f32) {
+      %0 = memref.load %arg0[%arg1, %arg2] : memref<?x?xf32>
+      scf.reduce(%0)  : f32 {
+      ^bb0(%arg3: f32, %arg4: f32):
+        %1 = arith.addf %arg3, %arg4 : f32
+        scf.reduce.return %1 : f32
+      }
+      scf.reduce(%0)  : f32 {
+      ^bb0(%arg3: f32, %arg4: f32):
+        %1 = arith.addf %arg3, %arg4 : f32
+        scf.reduce.return %1 : f32
+      }
+      scf.yield
+    }
+    scf.reduce(%0)  : f32 {
+    ^bb0(%arg2: f32, %arg3: f32):
+      %2 = arith.addf %arg2, %arg3 : f32
+      scf.reduce.return %2 : f32
+    }
+    scf.yield
+  }
+  return %0 : f32
+}
+
+// CHECK-LABEL:   func @nested_parallel_diff_num_reducs(
+// CHECK:           scf.parallel
+// CHECK-NEXT:         scf.parallel
+
+// -----
+
+func.func @nested_parallel_diff_reducs(%arg0: memref<?x?xf32>) -> f32 {
+  %cst = arith.constant 0.000000e+00 : f32
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %dim = memref.dim %arg0, %c0 : memref<?x?xf32>
+  %dim_0 = memref.dim %arg0, %c1 : memref<?x?xf32>
+  %0 = scf.parallel (%arg1) = (%c0) to (%dim) step (%c1) init (%cst) -> f32 {
+    %0 = scf.parallel (%arg2) = (%c0) to (%dim_0) step (%c1) init (%cst) -> (f32) {
+      %0 = memref.load %arg0[%arg1, %arg2] : memref<?x?xf32>
+      scf.reduce(%0)  : f32 {
+      ^bb0(%arg3: f32, %arg4: f32):
+        %1 = arith.addf %arg3, %arg4 : f32
+        %2 = arith.addf %1, %arg4 : f32
+        scf.reduce.return %2 : f32
+      }
+      scf.yield
+    }
+    scf.reduce(%0)  : f32 {
+    ^bb0(%arg2: f32, %arg3: f32):
+      %1 = arith.addf %arg2, %arg3 : f32
+      scf.reduce.return %1 : f32
+    }
+    scf.yield
+  }
+  return %0 : f32
+}
+
+// CHECK-LABEL:   func @nested_parallel_diff_reducs(
+// CHECK:           scf.parallel
+// CHECK-NEXT:         scf.parallel
+
+// -----
+
+func.func @nested_parallel_diff_inits(%arg0: memref<?x?xf32>) -> f32 {
+  %cst = arith.constant 0.000000e+00 : f32
+  %cst_0 = arith.constant 1.000000e+00 : f32
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %dim = memref.dim %arg0, %c0 : memref<?x?xf32>
+  %dim_0 = memref.dim %arg0, %c1 : memref<?x?xf32>
+  %0 = scf.parallel (%arg1) = (%c0) to (%dim) step (%c1) init (%cst_0) -> f32 {
+    %0 = scf.parallel (%arg2) = (%c0) to (%dim_0) step (%c1) init (%cst) -> (f32) {
+      %0 = memref.load %arg0[%arg1, %arg2] : memref<?x?xf32>
+      scf.reduce(%0)  : f32 {
+      ^bb0(%arg3: f32, %arg4: f32):
+        %1 = arith.addf %arg3, %arg4 : f32
+        scf.reduce.return %1 : f32
+      }
+      scf.yield
+    }
+    scf.reduce(%0)  : f32 {
+    ^bb0(%arg2: f32, %arg3: f32):
+      %1 = arith.addf %arg2, %arg3 : f32
+      scf.reduce.return %1 : f32
+    }
+    scf.yield
+  }
+  return %0 : f32
+}
+
+// CHECK-LABEL:   func @nested_parallel_diff_inits(
+// CHECK:           scf.parallel
+// CHECK-NEXT:         scf.parallel
+
+// -----
+
+func.func @nested_parallel_trailing_ops(%arg0: memref<?x?xf32>) -> f32 {
+  %cst = arith.constant 0.000000e+00 : f32
+  %cst_0 = arith.constant 1.000000e+00 : f32
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %dim = memref.dim %arg0, %c0 : memref<?x?xf32>
+  %dim_0 = memref.dim %arg0, %c1 : memref<?x?xf32>
+  %0 = scf.parallel (%arg1) = (%c0) to (%dim) step (%c1) init (%cst_0) -> f32 {
+    %0 = scf.parallel (%arg2) = (%c0) to (%dim_0) step (%c1) init (%cst) -> (f32) {
+      %0 = memref.load %arg0[%arg1, %arg2] : memref<?x?xf32>
+      scf.reduce(%0)  : f32 {
+      ^bb0(%arg3: f32, %arg4: f32):
+        %1 = arith.addf %arg3, %arg4 : f32
+        scf.reduce.return %1 : f32
+      }
+      scf.yield
+    }
+    %1 = arith.addf %0, %cst_0 : f32
+    scf.reduce(%1)  : f32 {
+    ^bb0(%arg2: f32, %arg3: f32):
+      %2 = arith.addf %arg2, %arg3 : f32
+      scf.reduce.return %2 : f32
+    }
+    scf.yield
+  }
+  return %0 : f32
+}
+
+// CHECK-LABEL:   func @nested_parallel_trailing_ops(
+// CHECK:           scf.parallel
+// CHECK-NEXT:         scf.parallel
+
+// -----
+
+func.func @nested_parallel_flipped_reds(%arg0: memref<?x?xf32>) -> (f32, f32) {
+  %cst = arith.constant 0.000000e+00 : f32
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %dim = memref.dim %arg0, %c0 : memref<?x?xf32>
+  %dim_0 = memref.dim %arg0, %c1 : memref<?x?xf32>
+  %0, %1 = scf.parallel (%arg1) = (%c0) to (%dim) step (%c1) init (%cst, %cst) -> (f32, f32) {
+    %0, %1 = scf.parallel (%arg2) = (%c0) to (%dim_0) step (%c1) init (%cst, %cst) -> (f32, f32) {
+      %0 = memref.load %arg0[%arg1, %arg2] : memref<?x?xf32>
+      scf.reduce(%0)  : f32 {
+      ^bb0(%arg3: f32, %arg4: f32):
+        %1 = arith.addf %arg3, %arg4 : f32
+        scf.reduce.return %1 : f32
+      }
+      scf.reduce(%0)  : f32 {
+      ^bb0(%arg3: f32, %arg4: f32):
+        %1 = arith.addf %arg3, %arg4 : f32
+        scf.reduce.return %1 : f32
+      }
+      scf.yield
+    }
+    scf.reduce(%1)  : f32 {
+    ^bb0(%arg2: f32, %arg3: f32):
+      %2 = arith.addf %arg2, %arg3 : f32
+      scf.reduce.return %2 : f32
+    }
+    scf.reduce(%0)  : f32 {
+    ^bb0(%arg3: f32, %arg4: f32):
+      %2 = arith.addf %arg3, %arg4 : f32
+      scf.reduce.return %2 : f32
+    }
+    scf.yield
+  }
+  return %0, %1 : f32, f32
+}
+
+// CHECK-LABEL:   func @nested_parallel_flipped_reds(
+// CHECK:           scf.parallel
+// CHECK-NEXT:         scf.parallel
+
+// -----
+
 func.func private @side_effect()
 func.func @one_unused(%cond: i1) -> (index) {
   %0, %1 = scf.if %cond -> (index, index) {

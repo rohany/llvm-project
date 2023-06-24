@@ -2938,9 +2938,6 @@ struct MergeNestedParallelLoops : public OpRewritePattern<ParallelOp> {
   LogicalResult matchAndRewrite(ParallelOp op,
                                 PatternRewriter &rewriter) const override {
     Block &outerBody = op.getLoopBody().front();
-    if (!llvm::hasSingleElement(outerBody.without_terminator()))
-      return failure();
-
     auto innerOp = dyn_cast<ParallelOp>(outerBody.front());
     if (!innerOp)
       return failure();
@@ -2951,9 +2948,74 @@ struct MergeNestedParallelLoops : public OpRewritePattern<ParallelOp> {
           llvm::is_contained(innerOp.getStep(), val))
         return failure();
 
-    // Reductions are not supported yet.
-    if (!op.getInitVals().empty() || !innerOp.getInitVals().empty())
+    // The parallel ops must have the same number of reductions.
+    if (op.getInitVals().size() != innerOp.getInitVals().size())
       return failure();
+
+    // If we have reductions, see if the loops are amenable to merging.
+    if (!op.getInitVals().empty() && !innerOp.getInitVals().empty()) {
+      // The kinds of reductions inside each of the operations should
+      // be the same.
+      for (auto tup : llvm::zip(op.getOps<ReduceOp>(), innerOp.getOps<ReduceOp>())) {
+        // Check if the reduction blocks are equivalent
+        // up to alpha renaming of variables within.
+        IRMapping mapping;
+        auto eq = OperationEquivalence::isEquivalentTo(
+          std::get<0>(tup),
+          std::get<1>(tup),
+          [&mapping] (Value lhs, Value rhs) {
+            if (lhs == rhs)
+              return success();
+            auto mapped = mapping.lookupOrNull(lhs);
+            // If no mapping exists, then we can map these two values
+            // to be equivalent (which will be done in the second callback).
+            if (mapped == nullptr)
+              return success();
+            // If there is a mapping, then it must be these two values.
+            if (mapped == rhs)
+              return success();
+            return failure();
+          },
+          [&mapping] (Value lhs, Value rhs) {
+            if (lhs != rhs)
+              mapping.map(lhs, rhs);
+          },
+          OperationEquivalence::IgnoreLocations
+        );
+        if (!eq)
+          return failure();
+      }
+
+      // The initial values for each of the loops should be the same.
+      for (auto tup : llvm::zip(op.getInitVals(), innerOp.getInitVals())) {
+        if (std::get<0>(tup) != std::get<1>(tup))
+          return failure();
+      }
+
+      // Finally, the only operations in the outer loop other
+      // than the inner loop are reductions.
+      auto blockVals = outerBody.without_terminator();
+      for (const auto& it : llvm::enumerate(blockVals)) {
+        if (it.index() == 0) {
+          if (!isa<scf::ParallelOp>(it.value()))
+            return failure();
+        } else {
+          // For indices > 0, the operation must be a reduction.
+          if (!isa<scf::ReduceOp>(it.value()))
+            return failure();
+          // In addition, the i-th reduction must consume the
+          // i-th reduction value from the inner loop.
+          auto redop = cast<scf::ReduceOp>(it.value());
+          if (redop.getOperand() != innerOp.getResult(it.index() - 1))
+            return failure();
+        }
+      }
+    } else {
+      // If the loops don't have any reductions, then it must be
+      // a perfectly nested loop.
+      if (!llvm::hasSingleElement(outerBody.without_terminator()))
+        return failure();
+    }
 
     auto bodyBuilder = [&](OpBuilder &builder, Location /*loc*/,
                            ValueRange iterVals, ValueRange) {
@@ -2984,7 +3046,7 @@ struct MergeNestedParallelLoops : public OpRewritePattern<ParallelOp> {
     auto newSteps = concatValues(op.getStep(), innerOp.getStep());
 
     rewriter.replaceOpWithNewOp<ParallelOp>(op, newLowerBounds, newUpperBounds,
-                                            newSteps, std::nullopt,
+                                            newSteps, innerOp.getInitVals(),
                                             bodyBuilder);
     return success();
   }

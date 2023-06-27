@@ -754,8 +754,8 @@ void mlir::collapseParallelLoops(
   // of the original induction value this represents. This is a normalized value
   // that is un-normalized already by the previous logic.
   auto newPloop = outsideBuilder.create<scf::ParallelOp>(
-      loc, lowerBounds, upperBounds, steps,
-      [&](OpBuilder &insideBuilder, Location, ValueRange ploopIVs) {
+      loc, lowerBounds, upperBounds, steps, loops.getInitVals(),
+      [&](OpBuilder &insideBuilder, Location, ValueRange ploopIVs, ValueRange ploopInitVals) {
         for (unsigned i = 0, e = combinedDimensions.size(); i < e; ++i) {
           Value previous = ploopIVs[i];
           unsigned numberCombinedDimensions = combinedDimensions[i].size();
@@ -780,7 +780,18 @@ void mlir::collapseParallelLoops(
           replaceAllUsesInRegionWith(loops.getBody()->getArgument(idx),
                                      previous, loops.getRegion());
         }
+        // Remap all uses of the initial loop values.
+        for (auto tup : llvm::zip(loops.getInitVals(), ploopInitVals)) {
+          auto [oldVal, newVal] = tup;
+          replaceAllUsesInRegionWith(oldVal, newVal, loops.getRegion());
+        }
       });
+
+  // Remap all return values of the old loop.
+  for (auto tup : llvm::zip(loops.getResults(), newPloop.getResults())) {
+    auto [oldVal, newVal] = tup;
+    oldVal.replaceAllUsesWith(newVal);
+  }
 
   // Replace the old loop with the new loop.
   loops.getBody()->back().erase();

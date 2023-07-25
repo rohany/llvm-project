@@ -39,6 +39,23 @@ struct GpuShuffleRewriter : public OpRewritePattern<gpu::ShuffleOp> {
     auto i32 = rewriter.getI32Type();
     auto i64 = rewriter.getI64Type();
 
+    // Promote boolean shuffles into upcasted 32-bit operations.
+    if (valueType.isSignlessInteger() &&
+        valueType.getIntOrFloatBitWidth() == 1) {
+      rewriter.setInsertionPoint(op);
+      // Pass an extended version of the boolean into a new shuffle,
+      // and downcast the result of the new shuffle.
+      auto extended = rewriter.create<arith::ExtUIOp>(valueLoc, i32, value);
+      auto newShuffle = rewriter.create<gpu::ShuffleOp>(
+          op.getLoc(), extended, op.getOffset(), op.getWidth(), op.getMode());
+      auto trunc = rewriter.create<arith::TruncIOp>(valueLoc, valueType,
+                                                    newShuffle.getResult(0));
+      rewriter.replaceAllUsesWith(op.getResults(),
+                                  ValueRange({trunc, newShuffle.getResult(1)}));
+      rewriter.eraseOp(op);
+      return success();
+    }
+
     // If the type of the value is either i32 or f32, the op is already valid.
     if (valueType.getIntOrFloatBitWidth() == 32)
       return failure();

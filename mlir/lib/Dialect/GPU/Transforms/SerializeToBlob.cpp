@@ -27,6 +27,7 @@
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Target/TargetMachine.h"
 
+#include <cstdlib>
 #include <string>
 #include <optional>
 
@@ -83,11 +84,18 @@ gpu::SerializeToBlobPass::translateToISA(llvm::Module &llvmModule,
   llvmModule.setDataLayout(targetMachine.createDataLayout());
 
   // Link in CUDA's libdevice bitcode file which has NVVM bitcode for common
-  // math primitives and bit-manipulation functions.
-  // TODO: Replace this hardcoded path with a cmake provided value.
+  // math primitives and bit-manipulation functions. We have to use an environment
+  // variable here because we might compile LLVM/MLIR on a machine that is different
+  // from the end device that it will run on.
   // TODO: In the future, this should be removed in favor of any linking support
   // that may be added to the LLVM NVPTX backend.
-  const std::string libdevicePath = "/usr/local/cuda-11.7/nvvm/libdevice/libdevice.10.bc";
+  const std::string envVarName = "LLVM_LIBDEVICE_PATH";
+  const char* envPath = std::getenv(envVarName.c_str());
+  if (!envPath) {
+    llvm::errs() << "ERROR: Set LLVM_LIBDEVICE_PATH to the path CUDA's libdevice bytecode file. This can often be found at <cuda install>/nvvm/libdevice/libdevice.10.bc.\n";
+    return std::nullopt;
+  }
+  const std::string libdevicePath = envPath;
   if (failed(linkBitcode(libdevicePath, llvmModule)))
     return std::nullopt;
 

@@ -173,6 +173,8 @@ def AffineLoopFusion : Pass<"affine-loop-fusion"> {
            "\"producer\", \"Perform only producer-consumer fusion\"), "
            "clEnumValN( mlir::affine::FusionMode::Sibling, "
            "\"sibling\", \"Perform only sibling fusion\"))">,
+    Option<"privatizeMemrefs", "privatize-memrefs", "bool", /*default=*/"true",
+           "Enables privatization of local memref allocations">,
     ];
   let dependentDialects = ["memref::MemRefDialect"];
 }

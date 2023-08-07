@@ -60,11 +60,12 @@ namespace {
 struct LoopFusion : public affine::impl::AffineLoopFusionBase<LoopFusion> {
   LoopFusion() = default;
   LoopFusion(unsigned fastMemorySpace, uint64_t localBufSizeThresholdBytes,
-             bool maximalFusion, enum FusionMode affineFusionMode) {
+             bool maximalFusion, enum FusionMode affineFusionMode, bool privatizeMemrefs) {
     this->fastMemorySpace = fastMemorySpace;
     this->localBufSizeThreshold = localBufSizeThresholdBytes / 1024;
     this->maximalFusion = maximalFusion;
     this->affineFusionMode = affineFusionMode;
+    this->privatizeMemrefs = privatizeMemrefs;
   }
 
   void runOnBlock(Block *block);
@@ -849,15 +850,19 @@ public:
   // The amount of additional computation that is tolerated while fusing
   // pair-wise as a fraction of the total computation.
   double computeToleranceThreshold;
+  // Control whether or not memref privatization should occur. This can be
+  // good for certain use cases, though in others can confuse the fusion process.
+  bool privatizeMemrefs;
 
   using Node = MemRefDependenceGraph::Node;
 
   GreedyFusion(MemRefDependenceGraph *mdg, unsigned localBufSizeThreshold,
                std::optional<unsigned> fastMemorySpace, bool maximalFusion,
-               double computeToleranceThreshold)
+               double computeToleranceThreshold, bool privatizeMemrefs)
       : mdg(mdg), localBufSizeThreshold(localBufSizeThreshold),
         fastMemorySpace(fastMemorySpace), maximalFusion(maximalFusion),
-        computeToleranceThreshold(computeToleranceThreshold) {}
+        computeToleranceThreshold(computeToleranceThreshold),
+        privatizeMemrefs(privatizeMemrefs) {}
 
   /// Initializes 'worklist' with nodes from 'mdg'.
   void init() {
@@ -1099,8 +1104,7 @@ public:
 
         DenseSet<Value> privateMemrefs;
         for (Value memref : producerConsumerMemrefs) {
-          if (canCreatePrivateMemRef(memref, srcEscapingMemRefs, srcId, dstId,
-                                     removeSrcNode)) {
+          if (privatizeMemrefs && canCreatePrivateMemRef(memref, srcEscapingMemRefs, srcId, dstId, removeSrcNode)) {
             // Create a private version of this memref.
             LLVM_DEBUG(llvm::dbgs()
                        << "Creating private memref for " << memref << '\n');
@@ -1488,7 +1492,7 @@ void LoopFusion::runOnBlock(Block *block) {
     fastMemorySpaceOpt = fastMemorySpace;
   unsigned localBufSizeThresholdBytes = localBufSizeThreshold * 1024;
   GreedyFusion fusion(&g, localBufSizeThresholdBytes, fastMemorySpaceOpt,
-                      maximalFusion, computeToleranceThreshold);
+                      maximalFusion, computeToleranceThreshold, privatizeMemrefs);
 
   if (affineFusionMode == FusionMode::ProducerConsumer)
     fusion.runProducerConsumerFusionOnly();
@@ -1506,7 +1510,7 @@ void LoopFusion::runOnOperation() {
 
 std::unique_ptr<Pass> mlir::affine::createLoopFusionPass(
     unsigned fastMemorySpace, uint64_t localBufSizeThreshold,
-    bool maximalFusion, enum FusionMode affineFusionMode) {
+    bool maximalFusion, enum FusionMode affineFusionMode, bool privatizeMemrefs) {
   return std::make_unique<LoopFusion>(fastMemorySpace, localBufSizeThreshold,
-                                      maximalFusion, affineFusionMode);
+                                      maximalFusion, affineFusionMode, privatizeMemrefs);
 }

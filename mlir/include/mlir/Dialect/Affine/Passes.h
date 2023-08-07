@@ -86,7 +86,8 @@ std::unique_ptr<Pass>
 createLoopFusionPass(unsigned fastMemorySpace = 0,
                      uint64_t localBufSizeThreshold = 0,
                      bool maximalFusion = false,
-                     enum FusionMode fusionMode = FusionMode::Greedy);
+                     enum FusionMode fusionMode = FusionMode::Greedy,
+                     bool privatizeMemrefs = true);
 
 /// Creates a pass to perform tiling on loop nests.
 std::unique_ptr<OperationPass<func::FuncOp>>

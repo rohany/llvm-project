@@ -1069,6 +1069,10 @@ LogicalResult MemRefRegion::compute(Operation *op, unsigned loopDepth,
 std::optional<int64_t>
 mlir::affine::getMemRefIntOrFloatEltSizeInBytes(MemRefType memRefType) {
   auto elementType = memRefType.getElementType();
+  bool isComplex = llvm::isa<ComplexType>(elementType);
+  if (isComplex) {
+    elementType = llvm::cast<ComplexType>(elementType).getElementType();
+  }
 
   unsigned sizeInBits;
   if (elementType.isIntOrFloat()) {
@@ -1081,6 +1085,10 @@ mlir::affine::getMemRefIntOrFloatEltSizeInBytes(MemRefType memRefType) {
       return std::nullopt;
   } else {
     return std::nullopt;
+  }
+
+  if (isComplex) {
+    sizeInBits *= 2;
   }
   return llvm::divideCeil(sizeInBits, 8);
 }

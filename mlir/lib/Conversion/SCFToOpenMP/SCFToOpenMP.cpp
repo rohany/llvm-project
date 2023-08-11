@@ -220,6 +220,42 @@ static LLVM::LLVMPointerType getPointerType(Type elementType,
   return LLVM::LLVMPointerType::get(elementType);
 }
 
+/// The below group of utility functions upcast boolean types (i1) and
+/// values to i8 types becuase atomic reductions must occur on at least
+/// byte-sized values. They should be used anywhere a raw, application
+/// defined value is sent towards a reduction operator, or a reduction
+/// operator's result is being consumed back by the application.
+
+mlir::Type maybeUpcastBooleanReductionType(OpBuilder &builder, mlir::Type typ) {
+  if (!isa<IntegerType>(typ))
+    return typ;
+  if (typ.getIntOrFloatBitWidth() != 1)
+    return typ;
+  return builder.getI8Type();
+}
+
+mlir::Value maybeUpcastBooleanReductionValue(OpBuilder &builder,
+                                             mlir::Value val) {
+  if (!isa<IntegerType>(val.getType()))
+    return val;
+  if (val.getType().getIntOrFloatBitWidth() != 1)
+    return val;
+  auto newTy = builder.getI8Type();
+  auto op = val.getDefiningOp();
+  return builder.create<LLVM::ZExtOp>(op->getLoc(), newTy, val);
+}
+
+mlir::Value maybeDowncastBooleanReductionValue(OpBuilder &builder,
+                                               mlir::Type reductionType,
+                                               mlir::Value val) {
+  if (!isa<IntegerType>(reductionType))
+    return val;
+  if (reductionType.getIntOrFloatBitWidth() != 1)
+    return val;
+  auto op = val.getDefiningOp();
+  return builder.create<LLVM::TruncOp>(op->getLoc(), reductionType, val);
+}
+
 /// Adds an atomic reduction combiner to the given OpenMP reduction declaration
 /// using llvm.atomicrmw of the given kind.
 static omp::ReductionDeclareOp addAtomicRMW(OpBuilder &builder,
@@ -238,6 +274,7 @@ static omp::ReductionDeclareOp addAtomicRMW(OpBuilder &builder,
   builder.setInsertionPointToEnd(atomicBlock);
   Value loaded = builder.create<LLVM::LoadOp>(reduce.getLoc(), decl.getType(),
                                               atomicBlock->getArgument(1));
+  loaded = maybeUpcastBooleanReductionValue(builder, loaded);
   builder.create<LLVM::AtomicRMWOp>(reduce.getLoc(), atomicKind,
                                     atomicBlock->getArgument(0), loaded,
                                     LLVM::AtomicOrdering::monotonic);
@@ -405,10 +442,12 @@ struct ParallelOpLowering : public OpRewritePattern<scf::ParallelOp> {
               isa<LLVM::PointerElementTypeInterface>(init.getType())) &&
              "cannot create a reduction variable if the type is not an LLVM "
              "pointer element");
+      Type storageTy =
+          maybeUpcastBooleanReductionType(rewriter, init.getType());
       Value storage = rewriter.create<LLVM::AllocaOp>(
-          loc, getPointerType(init.getType(), useOpaquePointers),
-          init.getType(), one, 0);
-      rewriter.create<LLVM::StoreOp>(loc, init, storage);
+          loc, getPointerType(storageTy, useOpaquePointers), storageTy, one, 0);
+      rewriter.create<LLVM::StoreOp>(
+          loc, maybeUpcastBooleanReductionValue(rewriter, init), storage);
       reductionVariables.push_back(storage);
     }
 
@@ -469,7 +508,9 @@ struct ParallelOpLowering : public OpRewritePattern<scf::ParallelOp> {
     results.reserve(reductionVariables.size());
     for (auto [variable, type] :
          llvm::zip(reductionVariables, parallelOp.getResultTypes())) {
-      Value res = rewriter.create<LLVM::LoadOp>(loc, type, variable);
+      auto loadTy = maybeUpcastBooleanReductionType(rewriter, type);
+      Value res = maybeDowncastBooleanReductionValue(
+          rewriter, type, rewriter.create<LLVM::LoadOp>(loc, loadTy, variable));
       results.push_back(res);
     }
     rewriter.replaceOp(parallelOp, results);

@@ -301,3 +301,54 @@ func.func @reduction6(%arg0 : index, %arg1 : index, %arg2 : index,
   }
   return
 }
+
+// -----
+
+// CHECK: omp.reduction.declare @[[$REDF:.*]] : i1
+
+// CHECK: init
+// CHECK: %[[INIT:.*]] = llvm.mlir.constant(false) : i1
+// CHECK: omp.yield(%[[INIT]] : i1)
+
+// CHECK: combiner
+// CHECK: ^{{.*}}(%[[ARG0:.*]]: i1, %[[ARG1:.*]]: i1)
+// CHECK: %[[RES:.*]] = arith.ori %[[ARG0]], %[[ARG1]]
+// CHECK: omp.yield(%[[RES]] : i1)
+
+// CHECK: atomic
+// CHECK: ^{{.*}}(%[[ARG0:.*]]: !llvm.ptr, %[[ARG1:.*]]: !llvm.ptr):
+// CHECK: %[[RHS:.*]] = llvm.load %[[ARG1]] : !llvm.ptr -> i1
+// CHECK: %[[RHSEXT:.*]] = llvm.zext %[[RHS]] : i1 to i8
+// CHECK: llvm.atomicrmw _or %[[ARG0]], %[[RHSEXT]] monotonic
+
+// CHECK-LABEL: @reduction7
+func.func @reduction7(%arg0 : index, %arg1 : index, %arg2 : index,
+                 %arg3 : index, %arg4 : index) {
+  // CHECK: %[[CST:.*]] = arith.constant false
+  // CHECK: %[[ONE:.*]] = llvm.mlir.constant(1
+  // CHECK: %[[BUF:.*]] = llvm.alloca %[[ONE]] x i8
+  // CHECK: %[[EXT:.*]] = llvm.zext %[[CST]] : i1 to i8
+  // CHECK: llvm.store %[[EXT]], %[[BUF]]
+  %step = arith.constant 1 : index
+  %zero = arith.constant 0 : i1
+  // CHECK: omp.parallel
+  // CHECK: omp.wsloop
+  // CHECK-SAME: reduction(@[[$REDF]] -> %[[BUF]]
+  // CHECK: memref.alloca_scope
+  scf.parallel (%i0, %i1) = (%arg0, %arg1) to (%arg2, %arg3)
+                            step (%arg4, %step) init (%zero) -> (i1) {
+    // CHECK: %[[CST_INNER:.*]] = arith.constant true
+    %one = arith.constant 1 : i1
+    // CHECK: omp.reduction %[[CST_INNER]], %[[BUF]]
+    scf.reduce(%one) : i1 {
+    ^bb0(%lhs : i1, %rhs: i1):
+      %res = arith.ori %lhs, %rhs : i1
+      scf.reduce.return %res : i1
+    }
+    // CHECK: omp.yield
+  }
+  // CHECK: omp.terminator
+  // CHECK: %[[LOAD:.*]] = llvm.load %[[BUF]]
+  // CHECK: llvm.trunc %[[LOAD]]
+  return
+}

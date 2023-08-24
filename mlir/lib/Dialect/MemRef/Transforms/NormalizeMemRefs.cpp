@@ -367,8 +367,7 @@ void NormalizeMemRefs::normalizeFuncOpMemRefs(func::FuncOp funcOp,
     }
     // Fetch a new memref type after normalizing the old memref to have an
     // identity map layout.
-    MemRefType newMemRefType = normalizeMemRefType(b, memrefType,
-                                                   /*numSymbolicOperands=*/0);
+    MemRefType newMemRefType = normalizeMemRefType(b, memrefType);
 
     if (newMemRefType == memrefType || funcOp.isExternal()) {
       // Either memrefType already had an identity map or the map couldn't be
@@ -476,8 +475,7 @@ void NormalizeMemRefs::normalizeFuncOpMemRefs(func::FuncOp funcOp,
       }
       // Computing a new memref type after normalizing the old memref to have an
       // identity map layout.
-      MemRefType newMemRefType = normalizeMemRefType(b, memrefType,
-                                                     /*numSymbolicOperands=*/0);
+      MemRefType newMemRefType = normalizeMemRefType(b, memrefType);
       resultTypes.push_back(newMemRefType);
     }
 
@@ -514,9 +512,9 @@ Operation *NormalizeMemRefs::createOpResultsNormalized(func::FuncOp funcOp,
       resultTypes.push_back(resultType);
       continue;
     }
+
     // Fetch a new memref type after normalizing the old memref.
-    MemRefType newMemRefType = normalizeMemRefType(b, memrefType,
-                                                   /*numSymbolicOperands=*/0);
+    MemRefType newMemRefType = normalizeMemRefType(b, memrefType);
     if (newMemRefType == memrefType) {
       // Either memrefType already had an identity map or the map couldn't
       // be transformed to an identity map.

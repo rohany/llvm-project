@@ -56,10 +56,11 @@ class BinarySection {
   unsigned Alignment;          // alignment in bytes (must be > 0)
   unsigned ELFType;            // ELF section type
   unsigned ELFFlags;           // ELF section flags
+  bool IsRelro{false};         // GNU RELRO section (read-only after relocation)
 
   // Relocations associated with this section. Relocation offsets are
   // wrt. to the original section address and size.
-  using RelocationSetType = std::set<Relocation, std::less<>>;
+  using RelocationSetType = std::multiset<Relocation, std::less<>>;
   RelocationSetType Relocations;
 
   // Dynamic relocations associated with this section. Relocation offsets are
@@ -95,6 +96,8 @@ class BinarySection {
   uint32_t Index{0};               // Section index in the output file.
   mutable bool IsReordered{false}; // Have the contents been reordered?
   bool IsAnonymous{false};         // True if the name should not be included
+                                   // in the output file.
+  bool IsLinkOnly{false};          // True if the section should not be included
                                    // in the output file.
 
   uint64_t hash(const BinaryData &BD,
@@ -287,6 +290,8 @@ public:
   }
   bool isReordered() const { return IsReordered; }
   bool isAnonymous() const { return IsAnonymous; }
+  bool isRelro() const { return IsRelro; }
+  void setRelro() { IsRelro = true; }
   unsigned getELFType() const { return ELFType; }
   unsigned getELFFlags() const { return ELFFlags; }
 
@@ -345,7 +350,8 @@ public:
   bool removeRelocationAt(uint64_t Offset) {
     auto Itr = Relocations.find(Offset);
     if (Itr != Relocations.end()) {
-      Relocations.erase(Itr);
+      auto End = Relocations.upper_bound(Offset);
+      Relocations.erase(Itr, End);
       return true;
     }
     return false;
@@ -448,6 +454,8 @@ public:
   void setIndex(uint32_t I) { Index = I; }
   void setOutputName(const Twine &Name) { OutputName = Name.str(); }
   void setAnonymous(bool Flag) { IsAnonymous = Flag; }
+  bool isLinkOnly() const { return IsLinkOnly; }
+  void setLinkOnly() { IsLinkOnly = true; }
 
   /// Emit the section as data, possibly with relocations.
   /// Use name \p SectionName for the section during the emission.
@@ -504,27 +512,6 @@ inline raw_ostream &operator<<(raw_ostream &OS, const BinarySection &Section) {
   Section.print(OS);
   return OS;
 }
-
-struct SDTMarkerInfo {
-  uint64_t PC;
-  uint64_t Base;
-  uint64_t Semaphore;
-  StringRef Provider;
-  StringRef Name;
-  StringRef Args;
-
-  /// The offset of PC within the note section
-  unsigned PCOffset;
-};
-
-/// Linux Kernel special sections point to a specific instruction in many cases.
-/// Unlike SDTMarkerInfo, these markers can come from different sections.
-struct LKInstructionMarkerInfo {
-  uint64_t SectionOffset;
-  int32_t PCRelativeOffset;
-  bool IsPCRelative;
-  StringRef SectionName;
-};
 
 } // namespace bolt
 } // namespace llvm

@@ -12,7 +12,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/ExecutionEngine/OptUtils.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Target/LLVMIR/Dialect/GPU/GPUToLLVMIRTranslation.h"
@@ -178,13 +180,6 @@ gpu::SerializeToBlobPass::optimizeLlvm(llvm::Module &llvmModule,
     return mlirError;
   }
   return success();
-}
-
-void gpu::SerializeToBlobPass::getDependentDialects(
-    DialectRegistry &registry) const {
-  registerGPUDialectTranslation(registry);
-  registerLLVMDialectTranslation(registry);
-  OperationPass<gpu::GPUModuleOp>::getDependentDialects(registry);
 }
 
 std::unique_ptr<llvm::TargetMachine>

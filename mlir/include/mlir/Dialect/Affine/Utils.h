@@ -249,8 +249,7 @@ LogicalResult normalizeMemRef(memref::AllocOp *op);
 /// transformed to an identity map with a new shape being computed for the
 /// normalized memref type and returns it. The old memref type is simply
 /// returned if the normalization failed.
-MemRefType normalizeMemRefType(OpBuilder& builder, MemRefType memrefType,
-                               unsigned numSymbolicOperands);
+MemRefType normalizeMemRefType(OpBuilder& builder, MemRefType memrefType);
 
 /// Given an operation, inserts one or more single result affine apply
 /// operations, results of which are exclusively used by this operation.

@@ -214,6 +214,10 @@ public:
     return true;
   }
   bool VisitVarDecl(VarDecl *VD) {
+    // Ignore the parameter decl itself (its children were handled elsewhere),
+    // as they don't contribute to the main-file #include.
+    if (llvm::isa<ParmVarDecl>(VD))
+      return true;
     // Mark declaration from definition as it needs type-checking.
     if (VD->isThisDeclarationADefinition())
       report(VD->getLocation(), VD);
@@ -299,6 +303,16 @@ public:
       return true;
     }
     return RecursiveASTVisitor::TraverseTemplateArgumentLoc(TL);
+  }
+
+  bool VisitCXXStdInitializerListExpr(CXXStdInitializerListExpr *E) {
+    // Reliance on initializer_lists requires std::initializer_list to be
+    // visible per standard. So report a reference to it, otherwise include of
+    // `<initializer_list>` might not receive any use.
+    report(E->getExprLoc(),
+           const_cast<CXXRecordDecl *>(E->getBestDynamicClassType()),
+           RefType::Implicit);
+    return true;
   }
 };
 

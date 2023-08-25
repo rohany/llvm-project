@@ -26,6 +26,7 @@
 #include "clang/Driver/XRayArgs.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Config/llvm-config.h"
@@ -424,6 +425,12 @@ std::string ToolChain::getInputFilename(const InputInfo &Input) const {
 ToolChain::UnwindTableLevel
 ToolChain::getDefaultUnwindTableLevel(const ArgList &Args) const {
   return UnwindTableLevel::None;
+}
+
+unsigned ToolChain::GetDefaultDwarfVersion() const {
+  // TODO: Remove the RISC-V special case when R_RISCV_SET_ULEB128 linker
+  // support becomes more widely available.
+  return getTriple().isRISCV() ? 4 : 5;
 }
 
 Tool *ToolChain::getClang() const {

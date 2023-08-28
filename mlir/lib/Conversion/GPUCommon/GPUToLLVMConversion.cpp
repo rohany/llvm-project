@@ -605,6 +605,9 @@ void GpuToLLVMConversionPass::runOnOperation() {
                                                     target);
   populateGpuToLLVMConversionPatterns(converter, patterns, gpuBinaryAnnotation,
                                       kernelBarePtrCallConv, &symbolTable);
+  // Also strip away any remaining address space annotations on memrefs
+  // during the lowering process.
+  populateGpuMemorySpaceAttributeConversions(converter, [](gpu::AddressSpace) -> unsigned { return 0; });
 
   if (failed(
           applyPartialConversion(getOperation(), target, std::move(patterns))))
